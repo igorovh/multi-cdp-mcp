@@ -14,6 +14,11 @@ export const managementTools: Tool[] = [
           type: "boolean",
           description: "Start from a completely empty profile instead of the configured template.",
         },
+        headless: {
+          type: "boolean",
+          description:
+            "Override the configured default for this environment. True runs without a window.",
+        },
         devExtensionPaths: {
           type: "array",
           items: { type: "string" },
@@ -50,6 +55,39 @@ export const managementTools: Tool[] = [
     name: "cdp_environment_release",
     description: "Release this conversation's environment binding without stopping or deleting it.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "cdp_environment_delete",
+    description: "Permanently delete one environment and its profile directory.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        environmentId: stringProperty("Environment ID to permanently delete."),
+        force: {
+          type: "boolean",
+          description: "Stop a running environment before deleting it. Busy calls are never forced.",
+        },
+      },
+      required: ["environmentId"],
+    },
+  },
+  {
+    name: "cdp_environment_delete_all",
+    description: "Permanently delete every environment and profile after explicit confirmation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        confirm: {
+          type: "string",
+          description: "Must be exactly DELETE ALL ENVIRONMENTS.",
+        },
+        force: {
+          type: "boolean",
+          description: "Stop running environments first. Busy calls are never forced.",
+        },
+      },
+      required: ["confirm"],
+    },
   },
   {
     name: "cdp_extension_list",

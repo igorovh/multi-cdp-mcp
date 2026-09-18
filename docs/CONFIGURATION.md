@@ -46,7 +46,11 @@ different worktree builds.
 ## Browser and limits
 
 `browser.portRange` is local-only and one port is reserved atomically per running
-environment. `limits.maxEnvironments` counts persistent records, including stopped ones.
+environment. `limits.maxEnvironments` limits concurrently starting/running environments;
+stopped profiles do not consume a slot.
+
+`browser.headless` defaults to `true`. Agents can override it per environment with
+`cdp_environment_create({ headless: false })`; the choice is persisted with that profile.
 
 Diagnostics go only to stderr. Set `MULTI_CDP_MCP_VERBOSE=1` for debug messages; stdout
 is reserved for MCP stdio frames.

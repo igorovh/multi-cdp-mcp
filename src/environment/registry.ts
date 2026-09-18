@@ -16,6 +16,7 @@ export interface EnvironmentRecord {
   extensionPaths: string[];
   profileMode: "template" | "fresh";
   devExtensionPaths: string[];
+  headless: boolean;
   /** Hints for crash recovery only; live process identity is always verified. */
   browserPid?: number;
   browserVersion?: string;
@@ -45,6 +46,7 @@ export class EnvironmentRegistry {
           ownerSessionId: null,
           profileMode: record.profileMode ?? "template",
           devExtensionPaths: record.devExtensionPaths ?? [],
+          headless: record.headless ?? config.browser.headless,
         });
       }
     } catch (error) {

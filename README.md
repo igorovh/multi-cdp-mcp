@@ -80,11 +80,16 @@ Copy [`config.example.json`](./config.example.json) to
 | `cdp_environment_select` | Select/resume an existing environment; explicit handover when idle |
 | `cdp_environment_stop` | Stop processes while retaining the profile |
 | `cdp_environment_release` | Release a binding without stopping the browser |
+| `cdp_environment_delete` | Permanently delete one profile; running ones require `force` |
+| `cdp_environment_delete_all` | Delete all profiles after confirmation; running ones require `force` |
 | `cdp_extension_list` | List every extension, including enabled state |
 | `cdp_extension_set_enabled` | Enable or disable any extension by ID |
 | `cdp_extension_reload` | Reload any extension by disabling and re-enabling it |
 
 All 34 downstream DevTools tools retain their original names and result structures.
+
+Brave runs headless by default. An agent can pass `headless: false` to
+`cdp_environment_create` when a visible window is needed for login or extension UI work.
 
 ## Development
 

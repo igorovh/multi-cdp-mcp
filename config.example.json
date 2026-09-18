@@ -17,7 +17,7 @@
     "enableExtensionTools": true
   },
   "browser": {
-    "headless": false,
+    "headless": true,
     "extraArgs": [],
     "portRange": {
       "start": 9400,

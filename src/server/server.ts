@@ -128,10 +128,11 @@ export class ProxyServer {
     switch (name) {
       case "cdp_environment_create": {
         const fresh = args.fresh === undefined ? false : booleanArg(args, "fresh");
+        const headless = args.headless === undefined ? undefined : booleanArg(args, "headless");
         const environment = await this.manager.createNamed(
           sessionId,
           stringArg(args, "name", false),
-          { fresh, devExtensionPaths: stringArrayArg(args, "devExtensionPaths") },
+          { fresh, headless, devExtensionPaths: stringArrayArg(args, "devExtensionPaths") },
         );
         return text({ id: environment.id, state: environment.state, port: environment.record.port });
       }
@@ -151,6 +152,20 @@ export class ProxyServer {
       case "cdp_environment_release": {
         const id = await this.manager.release(sessionId);
         return text(id ? { released: id } : { released: null, message: "No binding existed." });
+      }
+      case "cdp_environment_delete": {
+        const id = stringArg(args, "environmentId")!;
+        const force = args.force === undefined ? false : booleanArg(args, "force");
+        await this.manager.delete(id, sessionId, force);
+        return text({ deleted: id, profileDeleted: true });
+      }
+      case "cdp_environment_delete_all": {
+        if (stringArg(args, "confirm") !== "DELETE ALL ENVIRONMENTS") {
+          throw new Error('confirm must be exactly "DELETE ALL ENVIRONMENTS".');
+        }
+        const force = args.force === undefined ? false : booleanArg(args, "force");
+        const deleted = await this.manager.deleteAll(sessionId, force);
+        return text({ deleted, profilesDeleted: true });
       }
       case "cdp_extension_list":
         return text(await this.manager.listExtensions(sessionId));

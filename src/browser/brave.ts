@@ -188,6 +188,15 @@ async function taskkill(pid: number, force: boolean): Promise<void> {
   await proc.exited;
 }
 
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** Asks the browser to shut down over CDP. taskkill only closes windows, not the browser process. */
 async function requestBrowserClose(webSocketDebuggerUrl: string): Promise<void> {
   await new Promise<void>((resolve) => {
@@ -227,14 +236,14 @@ export async function stopBrave(target: BraveProcess): Promise<void> {
 
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    if (!(await probeEndpoint(target.port))) {
+    if (!(await probeEndpoint(target.port)) && !pidAlive(target.pid)) {
       log.ok(`Brave on port ${target.port} stopped`);
       return;
     }
     await Bun.sleep(500);
   }
 
-  log.warn(`Brave on port ${target.port} ignored the close request; forcing.`);
+  log.warn(`Brave pid ${target.pid} did not exit cleanly; forcing.`);
   await taskkill(target.pid, true);
   await Bun.sleep(1_000);
 }

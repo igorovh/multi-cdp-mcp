@@ -89,7 +89,7 @@ function pageId(text: string): number {
 try {
   await client.connect(transport);
   const { tools } = await client.listTools();
-  if (tools.length < 42) throw new Error(`Expected at least 42 tools, got ${tools.length}.`);
+  if (tools.length < 44) throw new Error(`Expected at least 44 tools, got ${tools.length}.`);
   console.error(`+ discovered ${tools.length} tools`);
 
   await call("smoke-a", "cdp_environment_create", { name: "smoke-a" });
@@ -137,6 +137,8 @@ try {
   const smokeB = environments.find((environment) => environment.id !== "smoke-a")!;
   await call("smoke-b", "cdp_environment_stop", { environmentId: smokeB.id });
   console.error("+ both environments stopped with profiles preserved");
+  await call("smoke-a", "cdp_environment_delete", { environmentId: "smoke-a" });
+  console.error("+ single environment deletion removed its profile");
 
   const explicitCaller = "client-without-session-metadata";
   const fresh = (await client.callTool({
@@ -161,6 +163,19 @@ try {
     },
   });
   console.error("+ fresh profile and explicit caller fallback passed");
+
+  await client.callTool({
+    name: "cdp_environment_delete_all",
+    arguments: {
+      confirm: "DELETE ALL ENVIRONMENTS",
+      callerId: explicitCaller,
+    },
+  });
+  const afterDelete = JSON.parse(
+    resultText(await call("smoke-b", "cdp_environment_list")),
+  ) as unknown[];
+  if (afterDelete.length !== 0) throw new Error("delete_all left environment records behind.");
+  console.error("+ delete_all removed all stopped environments and profiles");
 } finally {
   await client.close().catch(() => {});
   await transport.close().catch(() => {});
