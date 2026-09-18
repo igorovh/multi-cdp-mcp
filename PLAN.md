@@ -143,13 +143,13 @@ Multiple MCP transport connections and multiple OpenCode conversations are diffe
 
 ## 8. Proposed Management Tools
 
-Use the `cdp_envoirment_` prefix for management tools. These names describe the intended interface, not an existing implementation:
+Use the `cdp_environment_` prefix for management tools. These names describe the intended interface, not an existing implementation:
 
-- `cdp_envoirment_create`: create a named environment from a configured template and bind it to the caller.
-- `cdp_envoirment_list`: show environments and lifecycle state.
-- `cdp_envoirment_select`: bind the caller to an existing environment, respecting ownership.
-- `cdp_envoirment_stop`: stop that environment's processes while retaining its profile.
-- `cdp_envoirment_release`: release the caller's binding without deleting the profile.
+- `cdp_environment_create`: create a named environment from a configured template and bind it to the caller.
+- `cdp_environment_list`: show environments and lifecycle state.
+- `cdp_environment_select`: bind the caller to an existing environment, respecting ownership.
+- `cdp_environment_stop`: stop that environment's processes while retaining its profile.
+- `cdp_environment_release`: release the caller's binding without deleting the profile.
 
 Ordinary browser calls can resume a stopped environment automatically. Profile deletion can be added later as a separate explicit operation.
 

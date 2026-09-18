@@ -41,6 +41,12 @@ export interface FeasibilityConfig {
   devExtensionPath: string | null;
   /** Page the dev extension's content script is expected to modify. */
   devExtensionProbe: { url: string; expression: string; expected: string } | null;
+  /**
+   * Unpacked extension holding the `management` permission. The CDP Extensions domain
+   * has no enable/disable, so extension state is driven through chrome.management
+   * inside this extension's service worker.
+   */
+  controlExtensionPath: string;
   /** Abort the copy if the source exceeds this, to avoid a surprise multi-GB clone. */
   maxTemplateSizeGb: number;
 }
@@ -74,9 +80,11 @@ export const config: FeasibilityConfig = {
     enableExtensionTools: true,
   },
 
-  testUrls: [],
+  testUrls: ["https://www.twitch.tv/", "https://kick.com/"],
 
   devExtensionPath: join(import.meta.dir, "fixtures", "dev-extension"),
+
+  controlExtensionPath: join(import.meta.dir, "fixtures", "control-extension"),
 
   devExtensionProbe: {
     url: "https://example.com/",

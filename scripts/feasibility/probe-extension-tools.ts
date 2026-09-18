@@ -65,7 +65,7 @@ const brave = await launchBrave({
   userDataDir: browserUrlDir,
   remoteDebuggingPort: 9334,
   logDir,
-  devExtensionPath: null,
+  extensionPaths: [],
 });
 try {
   await Bun.sleep(8_000);

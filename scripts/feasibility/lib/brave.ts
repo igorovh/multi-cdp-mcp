@@ -9,7 +9,8 @@ export interface LaunchOptions {
   userDataDir: string;
   remoteDebuggingPort: number;
   logDir: string;
-  devExtensionPath: string | null;
+  /** Unpacked extensions to load. Passed as one comma-separated --load-extension value. */
+  extensionPaths: string[];
 }
 
 export interface BraveProcess {
@@ -39,8 +40,8 @@ function buildArgs(options: LaunchOptions): string[] {
     "--hide-crash-restore-bubble",
     "--restore-last-session=false",
   ];
-  if (options.devExtensionPath) {
-    args.push(`--load-extension=${options.devExtensionPath}`);
+  if (options.extensionPaths.length > 0) {
+    args.push(`--load-extension=${options.extensionPaths.join(",")}`);
   }
   args.push("about:blank");
   return args;

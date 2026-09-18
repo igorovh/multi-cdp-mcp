@@ -16,49 +16,87 @@ small enough that cloning per environment is cheap.
 Singleton locks (`SingletonLock`, `SingletonCookie`, `SingletonSocket`) are symlinks and
 must not be carried over; the harness skips all non-regular files.
 
-## 2. Extensions run in clones
+## 2. A cloned profile loses its Web Store extensions on the first restart
 
-All six standard extensions started their service workers in both clones. This is the
-result that matters, and it is measured over CDP `Target.getTargets` rather than through
-the MCP extension tools — see finding 3.
+This is the trap in this project, and it is silent.
 
-An unpacked extension passed via `--load-extension` also loaded, and its content script
-executed on a real page in both environments. That covers the extension-under-development
-requirement without needing `install_extension`.
+On the **first** launch of a clone the extensions run normally. During that session
+Chromium rejects the copied tracked-preference MACs in `Default/Secure Preferences` and
+clears the extension install records. On the **second** launch there are no records left,
+so `chrome.management.getAll()` returns only the extensions passed on the command line.
 
-MV3 service workers are event-driven. After a stop/resume cycle the worker count drops to
-near zero until something wakes them, which is normal and not a regression. Navigating to a
-page the extension matches is the meaningful check.
+Symptoms that made this hard to spot: the first run looks perfect, and the extension
+directories under `Default/Extensions` are still on disk the whole time.
 
-## 3. Brave does not back the DevTools MCP extension tools
+### Fix: re-declare each extension as unpacked, keeping its ID
 
-`list_extensions` reports 1–2 extensions while 7 are demonstrably running. Measured both
-over a `--browserUrl` connection and with the backend launching Brave itself
-(`scripts/feasibility/probe-extension-tools.ts`); **both report the same wrong number**.
+`Default/Secure Preferences` stores each extension's full manifest, including its `key`
+— the base64 public key. An extension's ID is derived from that key, so writing it back
+into the on-disk `manifest.json` and loading the directory with `--load-extension`
+reproduces the original ID.
 
-So this is a Brave limitation, not a transport limitation. Consequences:
+Keeping the ID matters: `chrome-extension://<id>/` is the origin for the extension's
+`chrome.storage.local`, IndexedDB and localStorage, so its settings and logins survive.
 
-- Do not rely on `list_extensions`, `install_extension`, `reload_extension`,
-  `trigger_extension_action` or `uninstall_extension` on Brave.
-- Load the development extension with `--load-extension` at browser launch instead.
-- Verify extension behaviour through page effects, not through the extension tools.
+`prepareUnpackedExtensions()` in `scripts/feasibility/lib/profile.ts` does this. Verified
+over three consecutive restarts (`probe-extension-persistence.ts`): all six extensions
+keep their original IDs every time.
+
+Side effects, both acceptable:
+
+- The extensions no longer auto-update, which makes environments reproducible.
+- They now report `installType: "development"` rather than `"normal"`.
+
+## 3. Extension management needs chrome.management, not the CDP Extensions domain
+
+An earlier revision of this document blamed Brave for under-reporting extensions. That
+was wrong. The CDP `Extensions` domain registers itself as:
+
+```
+Extensions.getExtensions  →  "Gets a list of all unpacked extensions."
+Extensions.uninstall      →  "Uninstalls an unpacked extension (others not supported)"
+```
+
+It is unpacked-only by design, on Chrome as much as on Brave, and it has **no
+enable/disable command at all**. `list_extensions` was reporting correctly; there simply
+was nothing else for it to see.
+
+Two consequences:
+
+- After the fix in finding 2 every extension is unpacked, so `list_extensions`,
+  `reload_extension`, `install_extension`, `uninstall_extension` and
+  `trigger_extension_action` all became usable. The harness now sees 9 of 9.
+- Enable and disable still do not exist in CDP. They are driven through
+  `chrome.management` inside a bundled control extension
+  (`scripts/feasibility/fixtures/control-extension`), attached over CDP and evaluated in
+  its service worker.
+
+`chrome.management.setEnabled` is documented as usually requiring a user gesture.
+`Runtime.evaluate` with `userGesture: true` satisfies it: no confirmation dialog appeared,
+and toggling the dev fixture off and on removed and restored its content-script marker in
+both environments. Disabling a Web Store extension also stopped its service worker.
+
+Attaching a debugger session to the control extension's service worker keeps it from going
+dormant, which is why the proxy should attach once at environment start and hold it.
 
 ## 4. Transport decision: proxy launches Brave, backend connects via `--browserUrl`
 
-Since extension tooling is equally broken in both modes, the tie is broken by lifecycle
-control. Launching Brave ourselves gives explicit control over the profile directory,
-port, launch arguments, and browser lifetime, and avoids Puppeteer's default switches.
+Extension tooling behaves the same over `--browserUrl` and with the backend launching
+Brave itself (`probe-extension-tools.ts`), so the tie is broken by lifecycle control.
+Launching Brave ourselves gives explicit control over the profile directory, port, launch
+arguments and browser lifetime, and avoids Puppeteer's default switches. It is also the
+only way to pass `--load-extension`, which finding 2 depends on.
 
 This resolves the open question in section 6 of `PLAN.md` in favour of the first option.
 
-Note that `--categoryExtensions` *is* accepted over `--browserUrl` on Chromium 153; the
-restriction described in the upstream configuration docs applied to versions before 149.
+`--categoryExtensions` is accepted over `--browserUrl` on Chromium 153; the restriction in
+the upstream configuration docs applied to versions before 149.
 
 ## 5. Isolation and lifecycle hold
 
 - Navigating one environment does not affect the other.
 - Stopping one browser leaves the other serving on its own port.
-- A stopped environment restarts from the same directory with its state intact.
+- A stopped environment restarts from the same directory with its extensions intact.
 
 ## 6. Windows process notes
 
@@ -69,10 +107,25 @@ Two things that will matter for the proxy as well:
 - `taskkill` closes windows but leaves the browser process running. A graceful shutdown
   needs CDP `Browser.close`, which also flushes the profile to disk.
 
+## 7. Authentication: partial
+
+Cookie **names** are recorded per site, never values. After cloning:
+
+| Site | Session cookies present | Reading |
+| --- | --- | --- |
+| kick.com | `kick_session` | Session material survived cloning |
+| twitch.tv | `api_token`, `server_session_id` — but **no `auth-token`** | Twitch's login cookie is absent |
+
+`auth-token` is the cookie Twitch signs requests with, so the Twitch session most likely
+did **not** survive. This still needs a human to open the browser and look.
+
+If Twitch does not survive cloning, the fallback is a one-time sign-in inside a persistent
+environment: finding 2 guarantees the extension origins are stable, and the profile is
+preserved across stop/resume, so the login should persist from then on.
+
 ## Still unverified
 
-- **Authentication.** `testUrls` is empty, so only a placeholder page was loaded. Cookie
-  encryption keys are DPAPI-wrapped for the current Windows user, so cloning within the
-  same account should preserve them, but this needs a per-site check by a human.
-- Whether extensions behave correctly beyond starting, e.g. on their target sites.
+- Whether the Twitch and Kick sessions are actually usable, by eye.
+- Whether the Twitch/Kick extensions behave correctly on their target sites beyond
+  starting their service workers.
 - Three concurrent environments; only two were tested.

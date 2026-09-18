@@ -14,10 +14,11 @@ import {
   type BraveProcess,
 } from "./lib/brave.ts";
 import { Backend, type BackendTarget, type ConnectionMode } from "./lib/backend.ts";
-import { extensionWorkers } from "./lib/cdp.ts";
+import { CdpClient } from "./lib/cdp.ts";
+import { ExtensionControl } from "./lib/control.ts";
 import { errorMessage, log } from "./lib/log.ts";
 import { parseExtensions, parsePages, urlFromPageLabel } from "./lib/parse.ts";
-import { cloneEnvironment, prepareTemplate } from "./lib/profile.ts";
+import { cloneEnvironment, prepareTemplate, prepareUnpackedExtensions } from "./lib/profile.ts";
 import {
   writeReport,
   type ExtensionObservation,
@@ -44,8 +45,11 @@ interface Environment {
   id: string;
   port: number;
   dir: string;
+  extensionPaths: string[];
   brave: BraveProcess | null;
   backend: Backend | null;
+  cdp: CdpClient | null;
+  control: ExtensionControl | null;
 }
 
 const environments: Environment[] = [];
@@ -80,6 +84,10 @@ async function exists(path: string): Promise<boolean> {
     return false;
   }
 }
+
+const bundledExtensions = [config.controlExtensionPath, config.devExtensionPath].filter(
+  (path): path is string => path !== null,
+);
 
 const dataRoot = config.dataRoot;
 const templateDir = join(dataRoot, "templates", "default");
@@ -202,30 +210,81 @@ async function probeExtensions(environment: Environment, label: string): Promise
     recordStep(`${label} (list_extensions)`, "skip", "Tool not exposed by this connection.");
   }
 
-  if (!environment.brave) {
-    recordStep(`${label} (service workers)`, "skip", "Browser not running.");
+  if (!environment.control) {
+    recordStep(`${label} (chrome.management)`, "skip", "Control extension not attached.");
     return;
   }
 
   try {
-    const workers = await extensionWorkers(environment.brave.webSocketDebuggerUrl);
-    for (const worker of workers) {
-      const id = worker.url.slice("chrome-extension://".length).split("/")[0] ?? "unknown";
+    const managed = await environment.control.list();
+    for (const extension of managed) {
       extensionObservations.push({
         environmentId: environment.id,
-        name: worker.url.slice("chrome-extension://".length),
-        id,
-        enabled: true,
+        name: `${extension.name} ${extension.version} [${extension.installType}]`,
+        id: extension.id,
+        enabled: extension.enabled,
       });
     }
+    const enabled = managed.filter((extension) => extension.enabled).length;
     recordStep(
-      `${label} (service workers)`,
-      workers.length > 0 ? "pass" : "warn",
-      `${workers.length} extension service worker(s) running`,
+      `${label} (chrome.management)`,
+      managed.length > 0 ? "pass" : "fail",
+      `${managed.length} installed, ${enabled} enabled`,
     );
   } catch (error) {
-    recordStep(`${label} (service workers)`, "fail", errorMessage(error));
+    recordStep(`${label} (chrome.management)`, "fail", errorMessage(error));
   }
+}
+
+async function attachControl(environment: Environment): Promise<void> {
+  if (!environment.brave) throw new Error(`${environment.id} has no running browser.`);
+  environment.cdp = await CdpClient.connect(environment.brave.webSocketDebuggerUrl);
+  environment.control = await ExtensionControl.attach(environment.cdp);
+}
+
+/** Toggling the dev fixture off and on is the end-to-end check for extension control. */
+async function probeExtensionToggle(environment: Environment): Promise<void> {
+  const label = `toggle dev extension ${environment.id}`;
+  const probe = config.devExtensionProbe;
+  if (!environment.control || !probe) {
+    recordStep(label, "skip", "No control extension or probe configured.");
+    return;
+  }
+
+  const managed = await environment.control.list();
+  const fixture = managed.find((extension) => extension.name === "multi-cdp-mcp dev fixture");
+  if (!fixture) {
+    recordStep(label, "skip", "Dev fixture not installed.");
+    return;
+  }
+
+  const off = await environment.control.setEnabled(fixture.id, false);
+  const whileDisabled = await readMarker(environment, probe);
+  const on = await environment.control.setEnabled(fixture.id, true);
+  const whileEnabled = await readMarker(environment, probe);
+
+  const passed =
+    off.ok && on.ok && whileDisabled !== probe.expected && whileEnabled === probe.expected;
+  recordStep(
+    label,
+    passed ? "pass" : "fail",
+    `disabled=${whileDisabled ?? "absent"} enabled=${whileEnabled ?? "absent"}` +
+      `${off.error ? ` off:${off.error}` : ""}${on.error ? ` on:${on.error}` : ""}`,
+  );
+}
+
+async function readMarker(
+  environment: Environment,
+  probe: { url: string; expression: string },
+): Promise<string | undefined> {
+  const backend = environment.backend!;
+  const navigation = await backend.call("navigate_page", { type: "url", url: probe.url });
+  if (navigation.isError) return undefined;
+  const evaluation = await backend.call("evaluate_script", {
+    function: `() => String(${probe.expression})`,
+  });
+  if (evaluation.isError) return undefined;
+  return evaluation.text.includes("loaded") ? "loaded" : undefined;
 }
 
 /** Proves the unpacked dev extension was loaded and its content script executed. */
@@ -261,6 +320,21 @@ async function probeDevExtension(environment: Environment): Promise<void> {
   );
 }
 
+const SESSION_COOKIE = /auth|session|token|sid|login/i;
+
+/** Names only: enough to see whether a session survived cloning, without logging secrets. */
+async function sessionCookieSummary(environment: Environment, url: string): Promise<string> {
+  if (!environment.cdp) return "No CDP connection; confirm sign-in manually.";
+  try {
+    const domain = new URL(url).hostname.split(".").slice(-2).join(".");
+    const names = await environment.cdp.cookieNames(domain);
+    const sessionLike = names.filter((name) => SESSION_COOKIE.test(name));
+    return `${names.length} cookie(s), ${sessionLike.length} session-like: ${sessionLike.slice(0, 4).join(", ") || "none"}`;
+  } catch (error) {
+    return `Cookie check failed: ${errorMessage(error)}`;
+  }
+}
+
 async function probeUrls(environment: Environment): Promise<void> {
   const backend = environment.backend!;
   const targets = config.testUrls.length > 0 ? config.testUrls : ["https://example.com/"];
@@ -287,7 +361,7 @@ async function probeUrls(environment: Environment): Promise<void> {
       url,
       finalUrl: current ? urlFromPageLabel(current.label) : "unknown",
       status: "loaded",
-      detail: "Sign-in state must be confirmed manually.",
+      detail: await sessionCookieSummary(environment, url),
     });
   }
 }
@@ -319,8 +393,18 @@ async function main(): Promise<void> {
     for (const entry of config.environments) {
       const dir = join(envsRoot, entry.id);
       await cloneEnvironment(templateDir, dir);
-      environments.push({ id: entry.id, port: entry.remoteDebuggingPort, dir, brave: null, backend: null });
-      log.ok(`Cloned ${entry.id} -> ${dir}`);
+      const unpacked = await prepareUnpackedExtensions(dir);
+      environments.push({
+        id: entry.id,
+        port: entry.remoteDebuggingPort,
+        dir,
+        extensionPaths: [...bundledExtensions, ...unpacked.map((extension) => extension.path)],
+        brave: null,
+        backend: null,
+        cdp: null,
+        control: null,
+      });
+      log.ok(`Cloned ${entry.id} -> ${dir} (${unpacked.length} profile extension(s))`);
     }
   });
 
@@ -331,7 +415,7 @@ async function main(): Promise<void> {
         userDataDir: environment.dir,
         remoteDebuggingPort: environment.port,
         logDir,
-        devExtensionPath: config.devExtensionPath,
+        extensionPaths: environment.extensionPaths,
       });
       versions.brave = environment.brave.browserVersion;
     }
@@ -345,12 +429,19 @@ async function main(): Promise<void> {
     log.ok(`Connection mode in use: ${connectionMode}`);
   });
 
+  await step("attach control extensions", async () => {
+    // Service workers start lazily; give them a moment before looking for ours.
+    await Bun.sleep(5_000);
+    for (const environment of environments) {
+      await attachControl(environment);
+    }
+  });
+
   await step("probe environments", async () => {
     for (const environment of environments) {
-      // Service workers start lazily; give them a moment before counting them.
-      await Bun.sleep(5_000);
       await probeExtensions(environment, `extensions ${environment.id}`);
       await probeDevExtension(environment);
+      await probeExtensionToggle(environment);
       await probeUrls(environment);
       await probeScreenshot(environment);
     }
@@ -375,6 +466,9 @@ async function main(): Promise<void> {
 
     await first.backend!.close();
     first.backend = null;
+    first.cdp?.close();
+    first.cdp = null;
+    first.control = null;
     await stopBrave(first.brave!);
     first.brave = null;
 
@@ -399,12 +493,12 @@ async function main(): Promise<void> {
       userDataDir: first.dir,
       remoteDebuggingPort: first.port,
       logDir,
-      devExtensionPath: config.devExtensionPath,
+      extensionPaths: first.extensionPaths,
     });
     await startBackend(first);
     await selectFirstPage(first);
-    // MV3 service workers stay dormant until an event, so a fresh count means little
-    // here. Navigating a matching page is what proves the extensions still work.
+    await Bun.sleep(5_000);
+    await attachControl(first);
     await probeDevExtension(first);
     await probeExtensions(first, `extensions ${first.id} (after resume)`);
   });
@@ -416,6 +510,8 @@ async function teardown(): Promise<void> {
       await environment.backend.close();
       environment.backend = null;
     }
+    environment.cdp?.close();
+    environment.cdp = null;
   }
   if (keepBrowsersOpen) {
     log.info("Browsers left running for manual inspection. Re-run with --close to shut them down.");
