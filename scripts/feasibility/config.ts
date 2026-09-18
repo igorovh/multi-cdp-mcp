@@ -37,8 +37,10 @@ export interface FeasibilityConfig {
   };
   /** URLs checked for retained authentication. Add your own. */
   testUrls: string[];
-  /** Unpacked extension build to load alongside the standard ones, or null. */
+  /** Unpacked extension build loaded via --load-extension, or null. */
   devExtensionPath: string | null;
+  /** Page the dev extension's content script is expected to modify. */
+  devExtensionProbe: { url: string; expression: string; expected: string } | null;
   /** Abort the copy if the source exceeds this, to avoid a surprise multi-GB clone. */
   maxTemplateSizeGb: number;
 }
@@ -74,7 +76,13 @@ export const config: FeasibilityConfig = {
 
   testUrls: [],
 
-  devExtensionPath: null,
+  devExtensionPath: join(import.meta.dir, "fixtures", "dev-extension"),
+
+  devExtensionProbe: {
+    url: "https://example.com/",
+    expression: "document.documentElement.dataset.multiCdpMcpFixture",
+    expected: "loaded",
+  },
 
   maxTemplateSizeGb: 5,
 };

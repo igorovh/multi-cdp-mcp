@@ -14,6 +14,7 @@ import {
   type BraveProcess,
 } from "./lib/brave.ts";
 import { Backend, type BackendTarget, type ConnectionMode } from "./lib/backend.ts";
+import { extensionWorkers } from "./lib/cdp.ts";
 import { errorMessage, log } from "./lib/log.ts";
 import { parseExtensions, parsePages, urlFromPageLabel } from "./lib/parse.ts";
 import { cloneEnvironment, prepareTemplate } from "./lib/profile.ts";
@@ -177,31 +178,86 @@ async function selectFirstPage(environment: Environment): Promise<void> {
   backend.selectedPageId = (pages.find((page) => page.selected) ?? pages[0]!).id;
 }
 
+/**
+ * Records extensions twice: what the DevTools MCP reports, and which extension
+ * service workers are really running. On Brave the two disagree, and only the
+ * second one answers "do the extensions work".
+ */
 async function probeExtensions(environment: Environment, label: string): Promise<void> {
   const backend = environment.backend!;
-  if (!backend.hasTool("list_extensions")) {
-    recordStep(label, "skip", "list_extensions is not exposed by this backend connection.");
+
+  if (backend.hasTool("list_extensions")) {
+    const result = await backend.call("list_extensions");
+    if (result.isError) {
+      recordStep(`${label} (list_extensions)`, "fail", result.text.slice(0, 200));
+    } else {
+      const parsed = parseExtensions(result.text);
+      recordStep(
+        `${label} (list_extensions)`,
+        parsed.length > 0 ? "pass" : "warn",
+        `${parsed.length} reported`,
+      );
+    }
+  } else {
+    recordStep(`${label} (list_extensions)`, "skip", "Tool not exposed by this connection.");
+  }
+
+  if (!environment.brave) {
+    recordStep(`${label} (service workers)`, "skip", "Browser not running.");
     return;
   }
-  const result = await backend.call("list_extensions");
-  if (result.isError) {
-    recordStep(label, "fail", result.text.slice(0, 200));
+
+  try {
+    const workers = await extensionWorkers(environment.brave.webSocketDebuggerUrl);
+    for (const worker of workers) {
+      const id = worker.url.slice("chrome-extension://".length).split("/")[0] ?? "unknown";
+      extensionObservations.push({
+        environmentId: environment.id,
+        name: worker.url.slice("chrome-extension://".length),
+        id,
+        enabled: true,
+      });
+    }
+    recordStep(
+      `${label} (service workers)`,
+      workers.length > 0 ? "pass" : "warn",
+      `${workers.length} extension service worker(s) running`,
+    );
+  } catch (error) {
+    recordStep(`${label} (service workers)`, "fail", errorMessage(error));
+  }
+}
+
+/** Proves the unpacked dev extension was loaded and its content script executed. */
+async function probeDevExtension(environment: Environment): Promise<void> {
+  const probe = config.devExtensionProbe;
+  const label = `dev extension ${environment.id}`;
+  if (!config.devExtensionPath || !probe) {
+    recordStep(label, "skip", "No dev extension configured.");
     return;
   }
-  const parsed = parseExtensions(result.text);
-  for (const extension of parsed) {
-    extensionObservations.push({
-      environmentId: environment.id,
-      name: extension.name,
-      id: extension.id,
-      enabled: extension.enabled,
-    });
+
+  const backend = environment.backend!;
+  const navigation = await backend.call("navigate_page", { type: "url", url: probe.url });
+  if (navigation.isError) {
+    recordStep(label, "fail", navigation.text.slice(0, 200));
+    return;
   }
-  const enabled = parsed.filter((extension) => extension.enabled).length;
+
+  const evaluation = await backend.call("evaluate_script", {
+    function: `() => String(${probe.expression})`,
+  });
+  if (evaluation.isError) {
+    recordStep(label, "fail", evaluation.text.slice(0, 200));
+    return;
+  }
+  const matched = evaluation.text.includes(probe.expected);
   recordStep(
     label,
-    parsed.length > 0 ? "pass" : "warn",
-    `${parsed.length} installed, ${enabled} enabled`,
+    matched ? "pass" : "fail",
+    matched
+      ? `Content script marked the page (${probe.expected})`
+      : `Expected "${probe.expected}"; got: ${evaluation.text.slice(0, 120)}`,
   );
 }
 
@@ -291,7 +347,10 @@ async function main(): Promise<void> {
 
   await step("probe environments", async () => {
     for (const environment of environments) {
+      // Service workers start lazily; give them a moment before counting them.
+      await Bun.sleep(5_000);
       await probeExtensions(environment, `extensions ${environment.id}`);
+      await probeDevExtension(environment);
       await probeUrls(environment);
       await probeScreenshot(environment);
     }
@@ -344,6 +403,9 @@ async function main(): Promise<void> {
     });
     await startBackend(first);
     await selectFirstPage(first);
+    // MV3 service workers stay dormant until an event, so a fresh count means little
+    // here. Navigating a matching page is what proves the extensions still work.
+    await probeDevExtension(first);
     await probeExtensions(first, `extensions ${first.id} (after resume)`);
   });
 }

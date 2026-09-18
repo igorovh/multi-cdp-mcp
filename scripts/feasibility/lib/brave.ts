@@ -1,4 +1,6 @@
-import { mkdir, open } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { openSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { log } from "./log.ts";
 
@@ -71,25 +73,29 @@ export async function launchBrave(options: LaunchOptions): Promise<BraveProcess>
 
   await mkdir(options.logDir, { recursive: true });
   const logPath = join(options.logDir, `brave-${options.remoteDebuggingPort}.log`);
-  const logFile = await open(logPath, "a");
+  const logFd = openSync(logPath, "a");
 
-  // Argument array, never a joined shell string: every path here contains spaces.
-  const proc = Bun.spawn([options.executable, ...buildArgs(options)], {
-    stdout: logFile.fd,
-    stderr: logFile.fd,
-    stdin: "ignore",
+  // detached + unref, otherwise the browser dies with this process and cannot be
+  // inspected manually afterwards. Argument array, never a joined shell string:
+  // every path here contains spaces.
+  const proc = spawn(options.executable, buildArgs(options), {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+    windowsHide: false,
   });
   proc.unref();
+  const pid = proc.pid;
+  if (pid === undefined) throw new Error("Failed to spawn Brave: no pid returned.");
 
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const info = await probeEndpoint(options.remoteDebuggingPort);
     if (info?.webSocketDebuggerUrl) {
       log.ok(
-        `Brave up on port ${options.remoteDebuggingPort} (pid ${proc.pid}, ${info.Browser ?? "unknown build"})`,
+        `Brave up on port ${options.remoteDebuggingPort} (pid ${pid}, ${info.Browser ?? "unknown build"})`,
       );
       return {
-        pid: proc.pid,
+        pid,
         port: options.remoteDebuggingPort,
         browserVersion: info.Browser ?? "unknown",
         webSocketDebuggerUrl: info.webSocketDebuggerUrl,
@@ -111,9 +117,42 @@ async function taskkill(pid: number, force: boolean): Promise<void> {
   await proc.exited;
 }
 
-/** Closes the browser tree, preferring a graceful close so the profile is flushed. */
+/** Asks the browser to shut down over CDP. taskkill only closes windows, not the browser process. */
+async function requestBrowserClose(webSocketDebuggerUrl: string): Promise<void> {
+  await new Promise<void>((resolve) => {
+    let socket: WebSocket;
+    try {
+      socket = new WebSocket(webSocketDebuggerUrl);
+    } catch {
+      resolve();
+      return;
+    }
+    const finish = () => {
+      try {
+        socket.close();
+      } catch {
+        // Already closing.
+      }
+      resolve();
+    };
+    const timer = setTimeout(finish, 5_000);
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({ id: 1, method: "Browser.close" }));
+    });
+    socket.addEventListener("message", () => {
+      clearTimeout(timer);
+      finish();
+    });
+    socket.addEventListener("error", () => {
+      clearTimeout(timer);
+      finish();
+    });
+  });
+}
+
+/** Closes the browser, preferring a graceful shutdown so the profile is flushed to disk. */
 export async function stopBrave(target: BraveProcess): Promise<void> {
-  await taskkill(target.pid, false);
+  await requestBrowserClose(target.webSocketDebuggerUrl);
 
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {

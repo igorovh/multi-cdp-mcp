@@ -85,12 +85,11 @@ export class Backend {
 
     const { tools } = await client.listTools();
     const toolNames = tools.map((tool) => tool.name).sort();
+    // Includes optional pageId params: with extension tools enabled, evaluate_script
+    // makes pageId optional but still needs it unless a service worker is targeted.
     const pageIdTools = new Set(
       tools
-        .filter((tool) => {
-          const required = tool.inputSchema?.required;
-          return Array.isArray(required) && required.includes("pageId");
-        })
+        .filter((tool) => tool.inputSchema?.properties?.pageId !== undefined)
         .map((tool) => tool.name),
     );
     log.ok(
