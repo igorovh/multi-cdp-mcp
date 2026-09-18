@@ -32,6 +32,7 @@ Before a real run, edit [`scripts/feasibility/config.ts`](./scripts/feasibility/
 | `profileSource.mode` | `clone` copies your Brave profile, `fresh` starts empty, `template` reuses a prepared one |
 | `testUrls` | Sites checked for retained authentication |
 | `devExtensionPath` | Unpacked extension build to load; defaults to a bundled fixture |
+| `controlExtensionPath` | Extension holding `management`, used to enable/disable extensions |
 | `environments` | Environment IDs and their remote debugging ports |
 
 With `mode: "clone"` all Brave windows must be closed first — a live profile is not a
