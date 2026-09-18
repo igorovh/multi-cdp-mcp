@@ -8,12 +8,16 @@ opencode mcp list
 
 Confirm the command's `cwd` points at this repository and that `bun run start` works from
 that directory. OpenCode prefixes/group tools with the normalized server name
-(`multi-cdp`). Restart the OpenCode service after changing MCP configuration:
+(`multi-cdp`). Restart the OpenCode service after changing MCP configuration when your
+installed CLI provides service management:
 
 ```powershell
 opencode service restart
 opencode service status
 ```
+
+If `opencode service` is unavailable, close and reopen the OpenCode TUI/application. Use
+`opencode mcp list` to verify the reloaded configuration.
 
 ## Template copy fails or cloned logins are stale
 

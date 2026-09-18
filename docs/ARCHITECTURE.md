@@ -42,3 +42,9 @@ control extension holds `management` permission. The proxy attaches to its MV3 s
 worker and calls `chrome.management` through `Runtime.evaluate(userGesture: true)`.
 
 The debugger attachment keeps the service worker alive while the environment runs.
+
+## Deletion safety
+
+Profile deletion is constrained to the configured `envs` root. Running environments are
+rejected unless `force: true`; active calls and startups are never forced. Bulk deletion
+also requires the exact confirmation string `DELETE ALL ENVIRONMENTS`.

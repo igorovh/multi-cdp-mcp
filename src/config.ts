@@ -76,7 +76,7 @@ function defaults(): ProxyConfig {
       enableExtensionTools: true,
     },
     browser: {
-      headless: false,
+      headless: true,
       extraArgs: [],
       portRange: { start: 9400, end: 9499 },
     },

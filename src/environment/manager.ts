@@ -1,6 +1,6 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { BackendAdapter } from "../backend/adapter.ts";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ManagedExtension, ManagementResult } from "../browser/control.ts";
@@ -159,7 +159,7 @@ export class EnvironmentManager {
   async #createFor(
     sessionId: string,
     requestedId?: string,
-    options: { fresh?: boolean; devExtensionPaths?: string[] } = {},
+    options: { fresh?: boolean; devExtensionPaths?: string[]; headless?: boolean } = {},
   ): Promise<Environment> {
     const id = requestedId ?? `env-${Date.now().toString(36)}-${randomUUID().slice(0, 8)}`;
     if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(id)) {
@@ -181,6 +181,7 @@ export class EnvironmentManager {
       extensionPaths: [],
       profileMode: options.fresh ? "fresh" : "template",
       devExtensionPaths: options.devExtensionPaths ?? [],
+      headless: options.headless ?? this.config.browser.headless,
     };
 
     const environment = new Environment(record);
@@ -193,7 +194,7 @@ export class EnvironmentManager {
   async createNamed(
     sessionId: string,
     name?: string,
-    options: { fresh?: boolean; devExtensionPaths?: string[] } = {},
+    options: { fresh?: boolean; devExtensionPaths?: string[]; headless?: boolean } = {},
   ): Promise<Environment> {
     return await this.#createFor(sessionId, name, options);
   }
@@ -254,6 +255,66 @@ export class EnvironmentManager {
       await this.#ensureRunning(environment);
     }
     await this.#shutdown(environment);
+  }
+
+  async delete(id: string, sessionId: string, force = false): Promise<void> {
+    const environment = this.#environments.get(id);
+    if (!environment) throw new Error(`Unknown environment "${id}".`);
+    if (environment.record.ownerSessionId && environment.record.ownerSessionId !== sessionId) {
+      throw new Error(`Environment "${id}" belongs to another conversation.`);
+    }
+    if (environment.activeCalls > 0 || environment.state === "starting") {
+      throw new Error(`Environment "${id}" is busy and cannot be deleted.`);
+    }
+    if (environment.running && !force) {
+      throw new Error(`Environment "${id}" is running. Stop it first or pass force: true.`);
+    }
+    if (environment.running || environment.record.browserPid) await this.#shutdownForDelete(environment);
+    await this.#deleteStopped(environment);
+  }
+
+  async deleteAll(sessionId: string, force: boolean): Promise<number> {
+    const environments = [...this.#environments.values()];
+    const busy = environments.find(
+      (environment) => environment.activeCalls > 0 || environment.state === "starting",
+    );
+    if (busy) throw new Error(`Environment "${busy.id}" is busy; delete_all aborted.`);
+    const running = environments.filter(
+      (environment) => environment.running || environment.record.browserPid,
+    );
+    if (running.length > 0 && !force) {
+      throw new Error(
+        `${running.length} environment(s) may be running. Stop them first or pass force: true.`,
+      );
+    }
+    for (const environment of running) await this.#shutdownForDelete(environment);
+    for (const environment of environments) await this.#deleteStopped(environment);
+    this.#bindings.delete(sessionId);
+    return environments.length;
+  }
+
+  async #shutdownForDelete(environment: Environment): Promise<void> {
+    if (!environment.running && environment.record.browserPid) await this.#ensureRunning(environment);
+    await this.#shutdown(environment);
+  }
+
+  async #deleteStopped(environment: Environment): Promise<void> {
+    if (environment.running || environment.state === "starting" || environment.activeCalls > 0) {
+      throw new Error(`Environment "${environment.id}" is not safely stopped.`);
+    }
+    const root = resolve(environmentsDir(this.config));
+    const profile = resolve(environment.record.profileDir);
+    const rel = relative(root, profile);
+    if (rel.startsWith("..") || rel === "" || resolve(root, rel) !== profile) {
+      throw new Error(`Refusing to delete profile outside ${root}: ${profile}`);
+    }
+    for (const [caller, id] of this.#bindings) {
+      if (id === environment.id) this.#bindings.delete(caller);
+    }
+    await rm(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    await this.registry.remove(environment.id);
+    this.#environments.delete(environment.id);
+    log.info(`Deleted environment ${environment.id} and its profile`);
   }
 
   async #shutdown(environment: Environment): Promise<void> {
@@ -344,7 +405,7 @@ export class EnvironmentManager {
           userDataDir: environment.record.profileDir,
           remoteDebuggingPort: port,
           logDir: logsDir(this.config),
-          headless: this.config.browser.headless,
+          headless: environment.record.headless,
           extraArgs: this.config.browser.extraArgs,
           timeoutMs: this.config.limits.startupTimeoutMs,
           extensionPaths: [
