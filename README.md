@@ -47,6 +47,21 @@ opencode mcp list
 OpenCode exposes the server under `tools.multi-cdp`. Browser calls lazily create an
 environment for the invoking conversation.
 
+## Agent skill
+
+The repository includes `.opencode/skills/multi-cdp-browser/SKILL.md`. It teaches agents
+when to choose headless or visible environments, how to test/reload extensions, and how to
+handle lifecycle and destructive operations safely.
+
+Install it globally by copying the directory to:
+
+```text
+~/.config/opencode/skills/multi-cdp-browser/
+```
+
+Project discovery gives the repository copy precedence while working here; the global copy
+applies in every other project.
+
 ## Profiles
 
 The default configuration clones a prepared Brave template under
