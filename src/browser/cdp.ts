@@ -148,10 +148,7 @@ export class CdpClient {
     return result.result?.value as T;
   }
 
-  /**
-   * Returns cookie names only. Enough to tell whether a session survived cloning,
-   * without pulling credential values into logs or reports.
-   */
+  /** Returns cookie names only, never credential values. */
   async cookieNames(domainSuffix: string): Promise<string[]> {
     const { cookies } = await this.send<{ cookies: Array<{ name: string; domain: string }> }>(
       "Storage.getCookies",

@@ -1,8 +1,4 @@
-/**
- * Phase 1 feasibility harness: proves that cloned Brave profiles can run two
- * independent, extension-enabled, DevTools-MCP-controlled environments at once.
- * Run with `bun run feasibility`.
- */
+/** Proves two cloned Brave profiles can run independently through DevTools MCP. */
 import { mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "./config.ts";
@@ -12,13 +8,13 @@ import {
   launchBrave,
   stopBrave,
   type BraveProcess,
-} from "./lib/brave.ts";
+} from "../../src/browser/brave.ts";
 import { Backend, type BackendTarget, type ConnectionMode } from "./lib/backend.ts";
-import { CdpClient } from "./lib/cdp.ts";
-import { ExtensionControl } from "./lib/control.ts";
+import { CdpClient } from "../../src/browser/cdp.ts";
+import { ExtensionControl } from "../../src/browser/control.ts";
 import { errorMessage, log } from "./lib/log.ts";
 import { parseExtensions, parsePages, urlFromPageLabel } from "./lib/parse.ts";
-import { cloneEnvironment, prepareTemplate, prepareUnpackedExtensions } from "./lib/profile.ts";
+import { cloneEnvironment, prepareTemplate, prepareUnpackedExtensions } from "../../src/profile/manager.ts";
 import {
   writeReport,
   type ExtensionObservation,
@@ -186,11 +182,7 @@ async function selectFirstPage(environment: Environment): Promise<void> {
   backend.selectedPageId = (pages.find((page) => page.selected) ?? pages[0]!).id;
 }
 
-/**
- * Records extensions twice: what the DevTools MCP reports, and which extension
- * service workers are really running. On Brave the two disagree, and only the
- * second one answers "do the extensions work".
- */
+/** Records both the unpacked CDP list and complete chrome.management list. */
 async function probeExtensions(environment: Environment, label: string): Promise<void> {
   const backend = environment.backend!;
 

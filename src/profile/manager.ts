@@ -1,11 +1,8 @@
-import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { log } from "./log.ts";
+import { log } from "../logging.ts";
 
-/**
- * Caches, crash dumps and singleton locks. Excluded because they are either
- * process-bound (a copied lock confuses the new browser) or large and rebuildable.
- */
+/** Process-bound files and large rebuildable caches that must not enter a clone. */
 const PRUNED_SEGMENTS = new Set([
   "Crashpad",
   "CrashpadMetrics-active.pma",
@@ -81,11 +78,7 @@ export interface CopyStats {
   skipped: Array<{ path: string; reason: string }>;
 }
 
-/**
- * Copies a user data directory, skipping caches, crash dumps and singleton locks.
- * Per-file failures are collected instead of aborting: a single locked file must not
- * discard a multi-gigabyte copy.
- */
+/** Copies a profile while collecting per-file failures instead of discarding the clone. */
 export async function copyProfile(source: string, destination: string): Promise<CopyStats> {
   await rm(destination, { recursive: true, force: true });
   await mkdir(destination, { recursive: true });
@@ -150,10 +143,11 @@ export interface PrepareTemplateOptions {
   sourceUserDataDir: string;
   templateDir: string;
   maxTemplateSizeGb: number;
+  refresh?: boolean;
 }
 
 export async function prepareTemplate(options: PrepareTemplateOptions): Promise<string> {
-  const { mode, sourceUserDataDir, templateDir, maxTemplateSizeGb } = options;
+  const { mode, sourceUserDataDir, templateDir, maxTemplateSizeGb, refresh = true } = options;
 
   if (mode === "template") {
     if (!(await exists(templateDir))) {
@@ -166,6 +160,11 @@ export async function prepareTemplate(options: PrepareTemplateOptions): Promise<
   if (mode === "fresh") {
     await createFreshProfile(templateDir);
     log.ok(`Created empty template at ${templateDir}`);
+    return templateDir;
+  }
+
+  if (!refresh && (await exists(templateDir))) {
+    log.info(`Reusing existing cloned template at ${templateDir}`);
     return templateDir;
   }
 
@@ -191,6 +190,70 @@ export async function cloneEnvironment(templateDir: string, environmentDir: stri
   await copyProfile(templateDir, environmentDir);
 }
 
+const LOCK_FILE = ".multi-cdp-mcp.lock";
+
+interface LockContents {
+  pid: number;
+  acquiredAt: string;
+}
+
+async function processAlive(pid: number): Promise<boolean> {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Exclusively leases a profile across proxy processes and takes over dead owners. */
+export async function acquireProfileLock(profileDir: string): Promise<() => Promise<void>> {
+  const lockPath = join(profileDir, LOCK_FILE);
+  await mkdir(profileDir, { recursive: true });
+  const contents: LockContents = { pid: process.pid, acquiredAt: new Date().toISOString() };
+  let acquired = false;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await open(lockPath, "wx");
+      try {
+        await handle.writeFile(JSON.stringify(contents), "utf8");
+      } finally {
+        await handle.close();
+      }
+      acquired = true;
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      let existing: LockContents | null = null;
+      try {
+        existing = JSON.parse(await readFile(lockPath, "utf8")) as LockContents;
+      } catch {
+        // A writer may still be filling the newly-created file. Do not steal it.
+        await Bun.sleep(100);
+        continue;
+      }
+      if (await processAlive(existing.pid)) {
+        throw new Error(
+          `Profile ${profileDir} is locked by process ${existing.pid} since ${existing.acquiredAt}.`,
+        );
+      }
+      log.debug(`Taking over stale profile lock from pid ${existing.pid}`);
+      await rm(lockPath, { force: true });
+    }
+  }
+  if (!acquired) throw new Error(`Could not acquire profile lock at ${lockPath}.`);
+
+  return async () => {
+    try {
+      const current = JSON.parse(await readFile(lockPath, "utf8")) as LockContents;
+      if (current.pid === process.pid) await rm(lockPath, { force: true });
+    } catch {
+      // Already removed.
+    }
+  };
+}
+
 export interface ManagedExtension {
   id: string;
   name: string;
@@ -207,19 +270,14 @@ interface SecurePreferences {
   };
 }
 
-/**
- * Turns the profile's Web Store extensions into unpacked ones that can be loaded with
- * --load-extension. A cloned profile loses its extension install records on the first
- * restart, because Chromium rejects the copied tracked-preference MACs. Re-declaring the
- * public key in each manifest keeps the original extension ID, so the extension's origin
- * — and therefore its stored settings — survive.
- */
+/** Materializes extensions as unpacked with original IDs; copied install records are lost. */
 export async function prepareUnpackedExtensions(profileRoot: string): Promise<ManagedExtension[]> {
   const preferencesPath = join(profileRoot, "Default", "Secure Preferences");
   let parsed: SecurePreferences;
   try {
     parsed = JSON.parse(await readFile(preferencesPath, "utf8")) as SecurePreferences;
   } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     log.warn(`Cannot read ${preferencesPath}: ${(error as Error).message}`);
     return [];
   }

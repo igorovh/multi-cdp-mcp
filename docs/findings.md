@@ -107,25 +107,24 @@ Two things that will matter for the proxy as well:
 - `taskkill` closes windows but leaves the browser process running. A graceful shutdown
   needs CDP `Browser.close`, which also flushes the profile to disk.
 
-## 7. Authentication: partial
+## 7. Authentication: cloned sessions did not survive
 
 Cookie **names** are recorded per site, never values. After cloning:
 
 | Site | Session cookies present | Reading |
 | --- | --- | --- |
-| kick.com | `kick_session` | Session material survived cloning |
-| twitch.tv | `api_token`, `server_session_id` — but **no `auth-token`** | Twitch's login cookie is absent |
+| kick.com | `kick_session`, but the page shows **Sign in** | Not authenticated; the cookie is also used for anonymous sessions |
+| twitch.tv | `api_token`, `server_session_id`, but **no `auth-token`** and the page exposes the login control | Not authenticated |
 
-`auth-token` is the cookie Twitch signs requests with, so the Twitch session most likely
-did **not** survive. This still needs a human to open the browser and look.
+Neither required website retained its authenticated session after cloning. This is
+consistent with modern Chromium app-bound cookie protection: copying the profile files is
+not sufficient even under the same Windows account.
 
-If Twitch does not survive cloning, the fallback is a one-time sign-in inside a persistent
-environment: finding 2 guarantees the extension origins are stable, and the profile is
-preserved across stop/resume, so the login should persist from then on.
+The supported workflow is a one-time sign-in inside each persistent environment. Finding 2
+guarantees the extension origins are stable, and the profile is preserved across
+stop/resume, so those new logins persist with that environment.
 
 ## Still unverified
 
-- Whether the Twitch and Kick sessions are actually usable, by eye.
 - Whether the Twitch/Kick extensions behave correctly on their target sites beyond
   starting their service workers.
-- Three concurrent environments; only two were tested.

@@ -17,11 +17,7 @@ export interface ManagementResult {
   error?: string;
 }
 
-/**
- * chrome.management surface exposed by the bundled control extension. The CDP Extensions
- * domain only covers unpacked extensions and offers no enable/disable, so extension state
- * is driven from inside an extension instead.
- */
+/** Adds enable/disable through chrome.management, which the CDP domain lacks. */
 export class ExtensionControl {
   private constructor(
     private readonly client: CdpClient,
@@ -30,22 +26,30 @@ export class ExtensionControl {
   ) {}
 
   /** Several extensions expose a /background.js worker, so probe for the injected API. */
-  static async attach(client: CdpClient): Promise<ExtensionControl> {
-    const workers = await client.extensionWorkers();
-    for (const worker of workers) {
-      try {
-        const sessionId = await client.attach(worker.targetId);
-        const context = await client.evaluate<string>(sessionId, "globalThis.multiCdpMcp?.context");
-        if (!context) continue;
-        const extensionId = worker.url.slice("chrome-extension://".length).split("/")[0]!;
-        return new ExtensionControl(client, sessionId, extensionId);
-      } catch {
-        // Not the control extension, or not attachable.
+  static async attach(
+    client: CdpClient,
+    options: { waitMs?: number } = {},
+  ): Promise<ExtensionControl> {
+    const deadline = Date.now() + (options.waitMs ?? 0);
+    let workerCount = 0;
+    do {
+      const workers = await client.extensionWorkers();
+      workerCount = workers.length;
+      for (const worker of workers) {
+        try {
+          const sessionId = await client.attach(worker.targetId);
+          const context = await client.evaluate<string>(sessionId, "globalThis.multiCdpMcp?.context");
+          if (!context) continue;
+          const extensionId = worker.url.slice("chrome-extension://".length).split("/")[0]!;
+          return new ExtensionControl(client, sessionId, extensionId);
+        } catch {
+          // Not the control extension, or not attachable.
+        }
       }
-    }
-    throw new Error(
-      `Control extension not found among ${workers.length} extension service worker(s).`,
-    );
+      if (Date.now() < deadline) await Bun.sleep(250);
+    } while (Date.now() < deadline);
+
+    throw new Error(`Control extension not found among ${workerCount} extension service worker(s).`);
   }
 
   async list(): Promise<ManagedExtension[]> {

@@ -1,14 +1,10 @@
-/**
- * A cloned profile loses its Web Store extensions on the first restart. This measures
- * whether loading them as unpacked extensions with their original public key keeps them
- * — and their IDs — stable across restarts.
- */
+/** Proves materialized profile extensions keep their original IDs across restarts. */
 import { join } from "node:path";
 import { config } from "./config.ts";
-import { launchBrave, stopBrave } from "./lib/brave.ts";
-import { CdpClient } from "./lib/cdp.ts";
+import { launchBrave, stopBrave } from "../../src/browser/brave.ts";
+import { CdpClient } from "../../src/browser/cdp.ts";
 import { errorMessage, log } from "./lib/log.ts";
-import { cloneEnvironment, prepareUnpackedExtensions } from "./lib/profile.ts";
+import { cloneEnvironment, prepareUnpackedExtensions } from "../../src/profile/manager.ts";
 
 const PORT = 9337;
 const probeDir = join(config.dataRoot, "envs", "probe-persistence");

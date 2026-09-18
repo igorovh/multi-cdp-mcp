@@ -3,17 +3,7 @@ import { join } from "node:path";
 
 const LOCALAPPDATA = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
 
-/**
- * How a new environment profile is seeded.
- *
- * - `clone`: copy an existing Brave user data directory into a reusable template,
- *   then clone that template per environment. Carries over logins and extensions.
- *   The source browser must be closed while it is copied.
- * - `fresh`: start every environment from an empty user data directory.
- *   Nothing is carried over; you log in and install extensions once per environment.
- * - `template`: reuse a template directory that was already prepared earlier,
- *   without touching the source browser again.
- */
+/** Clone a source, start fresh, or reuse an explicitly prepared template. */
 export type ProfileSourceMode = "clone" | "fresh" | "template";
 
 export interface FeasibilityConfig {
@@ -41,11 +31,7 @@ export interface FeasibilityConfig {
   devExtensionPath: string | null;
   /** Page the dev extension's content script is expected to modify. */
   devExtensionProbe: { url: string; expression: string; expected: string } | null;
-  /**
-   * Unpacked extension holding the `management` permission. The CDP Extensions domain
-   * has no enable/disable, so extension state is driven through chrome.management
-   * inside this extension's service worker.
-   */
+  /** Holds management permission because CDP has no extension enable/disable. */
   controlExtensionPath: string;
   /** Abort the copy if the source exceeds this, to avoid a surprise multi-GB clone. */
   maxTemplateSizeGb: number;
@@ -84,7 +70,7 @@ export const config: FeasibilityConfig = {
 
   devExtensionPath: join(import.meta.dir, "fixtures", "dev-extension"),
 
-  controlExtensionPath: join(import.meta.dir, "fixtures", "control-extension"),
+  controlExtensionPath: join(process.cwd(), "extensions", "control"),
 
   devExtensionProbe: {
     url: "https://example.com/",

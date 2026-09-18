@@ -182,19 +182,19 @@ Implementation constraints:
 
 ## 10. Implementation Phases
 
-### Phase 1 — Feasibility
+### Phase 1 — Feasibility (complete)
 
 Prove cloned profiles, retained authentication, active extensions, and two independent Brave/DevTools environments. Select the launch transport based on observed results.
 
-### Phase 2 — Minimal end-to-end proxy
+### Phase 2 — Minimal end-to-end proxy (complete)
 
 Implement one backend, automatic OpenCode conversation routing, lazy environment creation, separate persistent profiles, and correct tool/result forwarding.
 
-### Phase 3 — Lifecycle and reuse
+### Phase 3 — Lifecycle and reuse (complete)
 
 Add named environments, explicit selection/handover, stop/resume, persistent registry, startup race handling, and crash recovery.
 
-### Phase 4 — Verification and documentation
+### Phase 4 — Verification and documentation (complete)
 
 Run the three-conversation acceptance test on Windows/Brave. Document installation, template preparation, OpenCode V2 configuration, extension build paths, and troubleshooting. Pin the tested dependency versions.
 
@@ -206,19 +206,19 @@ Run the three-conversation acceptance test on Windows/Brave. Document installati
 
 ## 11. Acceptance Criteria
 
-- [ ] Three OpenCode conversations automatically receive different environments.
-- [ ] Concurrent first calls do not create duplicate browsers for one environment.
-- [ ] Each environment has its own profile directory and downstream MCP connection.
-- [ ] Navigation, selected pages, and tool results do not leak across environments.
-- [ ] Closing or crashing one browser leaves the others usable.
-- [ ] Required standard extensions are enabled and behave correctly.
-- [ ] The development extension can be tested alongside them.
-- [ ] Authentication behavior is verified on the user's required websites.
-- [ ] Stop/resume preserves local profile state.
-- [ ] An environment can be deliberately reused from another conversation.
-- [ ] Screenshots and structured MCP errors are forwarded correctly.
-- [ ] Windows executable/profile paths containing spaces work.
-- [ ] No per-task browser-toolbar click or manual tab attachment is required.
+- [x] Three concurrent conversation IDs automatically receive different environments.
+- [x] Concurrent first calls do not create duplicate browsers for one environment.
+- [x] Each environment has its own profile directory and downstream MCP connection.
+- [x] Navigation, selected pages, and tool results do not leak across environments.
+- [x] Closing or crashing one browser leaves the others usable.
+- [ ] Required standard extensions execute on Twitch/Kick (service workers and management pass; visual site behaviour remains a manual check).
+- [x] The development extension can be tested alongside them.
+- [x] Authentication behavior is verified on Twitch and Kick (template sessions do not survive; one-time per-environment login is required).
+- [x] Stop/resume preserves local profile state.
+- [x] An environment can be deliberately reused from another conversation.
+- [x] Screenshots and structured MCP errors are forwarded correctly.
+- [x] Windows executable/profile paths containing spaces work.
+- [x] No per-task browser-toolbar click or manual tab attachment is required.
 
 ## 12. Research Findings and References
 

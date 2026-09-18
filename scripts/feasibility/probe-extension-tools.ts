@@ -1,15 +1,11 @@
-/**
- * Compares what list_extensions reports over a browser-url connection versus a
- * backend-launched (pipe) connection on the same cloned profile. Decides the
- * transport question in section 6 of PLAN.md with a measurement.
- */
+/** Compares extension tools over browser-url and backend-launched connections. */
 import { join } from "node:path";
 import { config } from "./config.ts";
-import { launchBrave, stopBrave } from "./lib/brave.ts";
+import { launchBrave, stopBrave } from "../../src/browser/brave.ts";
 import { Backend, type BackendTarget } from "./lib/backend.ts";
 import { errorMessage, log } from "./lib/log.ts";
 import { parseExtensions } from "./lib/parse.ts";
-import { cloneEnvironment } from "./lib/profile.ts";
+import { cloneEnvironment } from "../../src/profile/manager.ts";
 
 const templateDir = join(config.dataRoot, "templates", "default");
 const logDir = join(config.dataRoot, "logs");

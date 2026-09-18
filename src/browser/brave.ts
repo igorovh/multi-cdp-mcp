@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { log } from "./log.ts";
+import { log } from "../logging.ts";
 
 export interface LaunchOptions {
   executable: string;
@@ -11,6 +11,9 @@ export interface LaunchOptions {
   logDir: string;
   /** Unpacked extensions to load. Passed as one comma-separated --load-extension value. */
   extensionPaths: string[];
+  headless?: boolean;
+  extraArgs?: string[];
+  timeoutMs?: number;
 }
 
 export interface BraveProcess {
@@ -43,6 +46,8 @@ function buildArgs(options: LaunchOptions): string[] {
   if (options.extensionPaths.length > 0) {
     args.push(`--load-extension=${options.extensionPaths.join(",")}`);
   }
+  if (options.headless) args.push("--headless=new");
+  args.push(...(options.extraArgs ?? []));
   args.push("about:blank");
   return args;
 }
@@ -50,6 +55,12 @@ function buildArgs(options: LaunchOptions): string[] {
 interface VersionInfo {
   Browser?: string;
   webSocketDebuggerUrl?: string;
+}
+
+interface WindowsProcess {
+  ProcessId?: number;
+  ExecutablePath?: string | null;
+  CommandLine?: string | null;
 }
 
 async function probeEndpoint(port: number): Promise<VersionInfo | null> {
@@ -88,7 +99,8 @@ export async function launchBrave(options: LaunchOptions): Promise<BraveProcess>
   const pid = proc.pid;
   if (pid === undefined) throw new Error("Failed to spawn Brave: no pid returned.");
 
-  const deadline = Date.now() + 30_000;
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const info = await probeEndpoint(options.remoteDebuggingPort);
     if (info?.webSocketDebuggerUrl) {
@@ -106,9 +118,67 @@ export async function launchBrave(options: LaunchOptions): Promise<BraveProcess>
   }
 
   throw new Error(
-    `Brave did not expose a CDP endpoint on port ${options.remoteDebuggingPort} within 30s. ` +
-      `See ${logPath}.`,
+    `Brave did not expose a CDP endpoint on port ${options.remoteDebuggingPort} within ` +
+      `${Math.round(timeoutMs / 1000)}s. See ${logPath}.`,
   );
+}
+
+export async function portInUse(port: number): Promise<boolean> {
+  return (await probeEndpoint(port)) !== null;
+}
+
+/** Reconnects only after executable, profile, port and live CDP endpoint all match. */
+export async function reconnectBrave(options: {
+  executable: string;
+  userDataDir: string;
+  remoteDebuggingPort: number;
+}): Promise<BraveProcess | null> {
+  if (process.platform !== "win32" || options.remoteDebuggingPort <= 0) return null;
+  const script =
+    "Get-CimInstance Win32_Process -Filter \"Name = 'brave.exe'\" | " +
+    "Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress";
+  const proc = Bun.spawn(["powershell", "-NoProfile", "-Command", script], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const output = await new Response(proc.stdout).text();
+  if ((await proc.exited) !== 0 || output.trim() === "") return null;
+
+  let parsed: WindowsProcess | WindowsProcess[];
+  try {
+    parsed = JSON.parse(output) as WindowsProcess | WindowsProcess[];
+  } catch {
+    return null;
+  }
+  const expectedExe = options.executable.toLowerCase();
+  const expectedProfile = options.userDataDir.toLowerCase();
+  const expectedPort = `--remote-debugging-port=${options.remoteDebuggingPort}`;
+  const match = (Array.isArray(parsed) ? parsed : [parsed]).find((entry) => {
+    const executable = entry.ExecutablePath?.toLowerCase();
+    const command = entry.CommandLine?.toLowerCase();
+    return (
+      entry.ProcessId &&
+      executable === expectedExe &&
+      command?.includes(expectedProfile) &&
+      command.includes(expectedPort)
+    );
+  });
+  if (!match?.ProcessId) return null;
+
+  const info = await probeEndpoint(options.remoteDebuggingPort);
+  if (!info?.webSocketDebuggerUrl) {
+    throw new Error(
+      `Found Brave pid ${match.ProcessId} for ${options.userDataDir}, but its saved CDP ` +
+        `endpoint on port ${options.remoteDebuggingPort} does not respond.`,
+    );
+  }
+  log.ok(`Reconnected to Brave on port ${options.remoteDebuggingPort} (pid ${match.ProcessId})`);
+  return {
+    pid: match.ProcessId,
+    port: options.remoteDebuggingPort,
+    browserVersion: info.Browser ?? "unknown",
+    webSocketDebuggerUrl: info.webSocketDebuggerUrl,
+  };
 }
 
 async function taskkill(pid: number, force: boolean): Promise<void> {

@@ -1,8 +1,4 @@
-/**
- * Driven over CDP with Runtime.evaluate. Every helper resolves to a plain object so it
- * survives JSON serialisation. Installed in both the service worker and the control
- * page: the worker is invisible but goes dormant, the page stays alive.
- */
+/** CDP-driven management API whose results are safe to serialize by value. */
 export function installApi(context) {
   globalThis.multiCdpMcp = {
     context,

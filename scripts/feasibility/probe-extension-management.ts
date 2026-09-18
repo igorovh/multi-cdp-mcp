@@ -1,15 +1,11 @@
-/**
- * Measures whether extension enable/disable/reload can be driven from the proxy.
- * The CDP Extensions domain only covers unpacked extensions and has no setEnabled,
- * so this drives chrome.management inside a bundled control extension.
- */
+/** Measures enable/disable/reload through the bundled chrome.management extension. */
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "./config.ts";
-import { launchBrave, stopBrave, type BraveProcess } from "./lib/brave.ts";
-import { CdpClient, type CdpTarget } from "./lib/cdp.ts";
+import { launchBrave, stopBrave, type BraveProcess } from "../../src/browser/brave.ts";
+import { CdpClient, type CdpTarget } from "../../src/browser/cdp.ts";
 import { errorMessage, log } from "./lib/log.ts";
-import { cloneEnvironment } from "./lib/profile.ts";
+import { cloneEnvironment } from "../../src/profile/manager.ts";
 import { writeReport, type ReportData, type StepResult } from "./lib/report.ts";
 
 const PORT = 9335;
@@ -55,10 +51,7 @@ async function launch(): Promise<BraveProcess> {
   });
 }
 
-/**
- * Prefers the control service worker: it is invisible, and an attached debugger keeps
- * it from going dormant. Falls back to the control page when the worker is asleep.
- */
+/** Attaches to the invisible control worker and keeps it from going dormant. */
 async function attachToControl(
   client: CdpClient,
 ): Promise<{ sessionId: string; surface: string; extensionId: string }> {
