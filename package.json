@@ -5,7 +5,14 @@
   "type": "module",
   "description": "MCP proxy that gives each agent conversation its own isolated Brave browser environment.",
   "scripts": {
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --target=bun --outfile=dist/index.js",
     "feasibility": "bun run scripts/feasibility/run.ts",
+    "probe:sites": "bun run scripts/site-state-probe.ts",
+    "smoke": "bun run scripts/smoke.ts",
+    "smoke:crash": "bun run scripts/crash-recovery-smoke.ts",
+    "acceptance": "bun run scripts/acceptance.ts",
+    "test": "bun test src",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

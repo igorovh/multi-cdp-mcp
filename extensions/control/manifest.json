@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "multi-cdp-mcp control",
+  "version": "0.0.1",
+  "description": "Exposes chrome.management to the proxy, which the CDP Extensions domain does not cover.",
+  "permissions": ["management"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["control.html"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
