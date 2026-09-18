@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Feasibility harness output: screenshots, browser logs, generated reports.
+docs/feasibility/
+*.log
