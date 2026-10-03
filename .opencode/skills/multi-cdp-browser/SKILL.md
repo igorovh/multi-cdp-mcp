@@ -9,6 +9,48 @@ compatibility: OpenCode V2 with the multi-cdp MCP server configured
 Use the `multi-cdp` MCP tools for browser work. The proxy routes ordinary browser calls to
 the environment bound to the invoking OpenCode conversation.
 
+## Cheat sheet (do not search the catalog for these)
+
+Call as `tools["multi-cdp"].<name>(args)` inside `execute`.
+
+| Tool | Args |
+| --- | --- |
+| `cdp_environment_create` | `{ name?, headless?, fresh?, devExtensionPaths? }` |
+| `cdp_environment_list` | `{}` (no identity needed; shows owner and `extensionControl`) |
+| `cdp_environment_select` | `{ environmentId }` |
+| `cdp_environment_stop` | `{ environmentId? }` |
+| `cdp_extension_list` | `{}` (check `controllable` before toggling) |
+| `cdp_extension_set_enabled` | `{ extensionId, enabled }` |
+| `cdp_extension_reload` | `{ extensionId }` |
+| `install_extension` | `{ path }` |
+| `list_pages` / `select_page` | `{}` / `{ pageId, bringToFront? }` |
+| `new_page` / `navigate_page` | `{ url }` / `{ pageId, url, timeout? }` |
+| `take_snapshot` / `take_screenshot` | `{ pageId }` |
+| `click` / `hover` | `{ pageId, uid \| selector \| x+y, bringToFront?, dblClick? }` |
+| `fill_form` / `press_key` | `{ pageId, elements }` / `{ pageId, key }` |
+| `evaluate_script` | `{ pageId, function, timeout?, bringToFront? }` |
+| `list_console_messages` / `list_network_requests` | `{ pageId }` |
+
+## Identity
+
+- Calls route by `_meta.sessionID`. OpenCode Code Mode `execute` does not send it yet, so
+  pass `callerId: "<current session ID>"` on **every** call, always the same value.
+- Without `callerId`, `environmentId` alone addresses that environment directly.
+  Creating with `name` and no `callerId` makes later `environmentId` calls consistent.
+- `cdp_environment_stop({ environmentId })` stops any idle environment; deleting one owned
+  by another identity needs `cdp_environment_select` first. Errors name the owner.
+
+## Background tabs and auto-hiding controls
+
+- Hidden tabs throttle timers and `requestAnimationFrame`. Pass `bringToFront: true` to
+  `evaluate_script`, `click` or `hover` for timing-sensitive work, keep in-page waits
+  ≤15 s and pass `timeout` (ms) to `evaluate_script` for longer ones.
+- Player controls that hide on mouse-out invalidate snapshot `uid`s. Use
+  `hover({ pageId, selector })` then `click({ pageId, selector })`; the pointer stays where
+  `hover` left it.
+- A navigation timeout usually means the load event was slow; the result includes the
+  page's URL and `readyState`. Pass `timeout: 45000` for streaming sites.
+
 ## Choose visibility before the first browser call
 
 - For routine navigation, screenshots, DOM, console, network, and performance work, let the
@@ -19,8 +61,8 @@ the environment bound to the invoking OpenCode conversation.
 - Pass `fresh: true` only when the task needs a clean browser without template state.
 - Pass `devExtensionPaths` when testing a build from a specific project or worktree.
 
-Do not pass `environmentId` or `callerId` during normal OpenCode calls. Session metadata
-routes them automatically. Those fields are fallbacks for clients that lack session metadata.
+`install_extension` only reads the OS temp directory, `devExtensionPaths` and the
+configured `backend.filesystemRoots`; prefer `devExtensionPaths` for worktree builds.
 
 ## Reuse and isolation
 
