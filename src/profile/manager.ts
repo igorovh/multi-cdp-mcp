@@ -1,5 +1,5 @@
 import { cp, mkdir, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import { log } from "../logging.ts";
 
 /** Process-bound files and large rebuildable caches that must not enter a clone. */
@@ -254,59 +254,4 @@ export async function acquireProfileLock(profileDir: string): Promise<() => Prom
   };
 }
 
-export interface ManagedExtension {
-  id: string;
-  name: string;
-  version: string;
-  path: string;
-}
-
-interface SecurePreferences {
-  extensions?: {
-    settings?: Record<
-      string,
-      { path?: string; manifest?: { name?: string; version?: string; key?: string } }
-    >;
-  };
-}
-
-/** Materializes extensions as unpacked with original IDs; copied install records are lost. */
-export async function prepareUnpackedExtensions(profileRoot: string): Promise<ManagedExtension[]> {
-  const preferencesPath = join(profileRoot, "Default", "Secure Preferences");
-  let parsed: SecurePreferences;
-  try {
-    parsed = JSON.parse(await readFile(preferencesPath, "utf8")) as SecurePreferences;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    log.warn(`Cannot read ${preferencesPath}: ${(error as Error).message}`);
-    return [];
-  }
-
-  const found: ManagedExtension[] = [];
-  for (const [id, entry] of Object.entries(parsed.extensions?.settings ?? {})) {
-    const { path: relativePath, manifest } = entry;
-    if (!relativePath || !manifest?.key || !manifest.name || !manifest.version) continue;
-    // Absolute paths belong to component extensions shipped with the browser.
-    if (isAbsolute(relativePath)) continue;
-
-    const directory = join(profileRoot, "Default", "Extensions", relativePath);
-    const manifestPath = join(directory, "manifest.json");
-    let onDisk: Record<string, unknown>;
-    try {
-      onDisk = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
-    } catch {
-      log.warn(`Skipping ${manifest.name}: no readable manifest at ${manifestPath}`);
-      continue;
-    }
-
-    if (onDisk.key !== manifest.key) {
-      onDisk.key = manifest.key;
-      await writeFile(manifestPath, JSON.stringify(onDisk, null, 2), "utf8");
-    }
-
-    found.push({ id, name: manifest.name, version: manifest.version, path: directory });
-  }
-
-  log.ok(`Prepared ${found.length} unpacked extension(s) from ${profileRoot}`);
-  return found;
-}
+export { prepareUnpackedExtensions } from "./extensions.ts";

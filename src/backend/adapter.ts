@@ -11,15 +11,18 @@ export interface BackendOptions {
   environmentId: string;
   browserUrl: string;
   logDir: string;
-  /** Screenshot and trace destination; the backend refuses paths outside its roots. */
-  filesystemRoot: string;
+  /** Directories path-taking tools may use; the backend also allows the OS temp directory. */
+  filesystemRoots: string[];
 }
 
-function buildArgs(config: ProxyConfig, options: { browserUrl?: string; root?: string }): string[] {
+function buildArgs(
+  config: ProxyConfig,
+  options: { browserUrl?: string; roots?: string[] },
+): string[] {
   const args = [config.backend.entrypoint];
   if (options.browserUrl) args.push(`--browserUrl=${options.browserUrl}`);
   if (config.backend.enableExtensionTools) args.push("--categoryExtensions");
-  if (options.root) args.push(`--filesystemRoot=${options.root}`);
+  for (const root of options.roots ?? []) args.push(`--filesystemRoot=${root}`);
   args.push("--usageStatistics=false");
   return args;
 }
@@ -36,7 +39,7 @@ export class BackendAdapter {
 
   static async start(config: ProxyConfig, options: BackendOptions): Promise<BackendAdapter> {
     await mkdir(options.logDir, { recursive: true });
-    await mkdir(options.filesystemRoot, { recursive: true });
+    await mkdir(options.filesystemRoots[0]!, { recursive: true });
     const logStream = createWriteStream(
       join(options.logDir, `backend-${options.environmentId}.log`),
       { flags: "a" },
@@ -46,7 +49,7 @@ export class BackendAdapter {
       command: config.backend.runtime,
       args: buildArgs(config, {
         browserUrl: options.browserUrl,
-        root: options.filesystemRoot,
+        roots: options.filesystemRoots,
       }),
       stderr: "pipe",
     });
@@ -88,12 +91,25 @@ export class BackendAdapter {
   async call(
     name: string,
     args: Record<string, unknown>,
-    signal?: AbortSignal,
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<CallToolResult> {
-    return (await this.client.callTool({ name, arguments: args }, undefined, {
-      timeout: this.timeoutMs,
-      signal,
-    })) as CallToolResult;
+    const timeout = options.timeoutMs ?? this.timeoutMs;
+    try {
+      return (await this.client.callTool({ name, arguments: args }, undefined, {
+        timeout,
+        signal: options.signal,
+      })) as CallToolResult;
+    } catch (error) {
+      if (/Request timed out/i.test(errorMessage(error))) {
+        throw new Error(
+          `${name} did not finish within ${Math.round(timeout / 1000)} s (proxy timeout). The ` +
+            "browser may still be busy with it. Background tabs throttle timers and " +
+            "requestAnimationFrame: pass bringToFront: true, keep in-page waits short, or " +
+            "pass a timeout for evaluate_script.",
+        );
+      }
+      throw error;
+    }
   }
 
   async close(): Promise<void> {

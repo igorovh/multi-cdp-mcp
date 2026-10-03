@@ -110,6 +110,10 @@ export class CdpClient {
     return targetInfos;
   }
 
+  get isClosed(): boolean {
+    return this.#closed;
+  }
+
   async extensionWorkers(): Promise<CdpTarget[]> {
     const targets = await this.getTargets();
     return targets.filter(
@@ -129,7 +133,7 @@ export class CdpClient {
   async evaluate<T>(
     sessionId: string,
     expression: string,
-    options: { userGesture?: boolean } = {},
+    options: { userGesture?: boolean; timeoutMs?: number } = {},
   ): Promise<T> {
     const result = await this.send<EvaluateResult<T>>(
       "Runtime.evaluate",
@@ -140,6 +144,7 @@ export class CdpClient {
         userGesture: options.userGesture ?? true,
       },
       sessionId,
+      options.timeoutMs,
     );
     if (result.exceptionDetails) {
       const details = result.exceptionDetails;

@@ -38,9 +38,18 @@ reproduces the original ID.
 Keeping the ID matters: `chrome-extension://<id>/` is the origin for the extension's
 `chrome.storage.local`, IndexedDB and localStorage, so its settings and logins survive.
 
-`prepareUnpackedExtensions()` in `scripts/feasibility/lib/profile.ts` does this. Verified
-over three consecutive restarts (`probe-extension-persistence.ts`): all six extensions
-keep their original IDs every time.
+`prepareUnpackedExtensions()` in `src/profile/extensions.ts` does this.
+
+Correction (2026-10-03): after the first launch Chromium rewrites each record as a
+command-line extension without the stored manifest, so re-reading `Secure Preferences` on
+the next start found nothing and every template extension vanished, enabled or not. The
+function now also scans `Default/Extensions` for manifests whose written `key` reproduces
+the directory ID. Disabled state is kept in the preferences and survives the restart.
+
+"Load unpacked" extensions in the source profile (absolute `path`, location 4) are cloned
+with an untrusted record: Chromium loads them disabled with `disabledReason: "unknown"`
+and rejects `setEnabled` with "cannot be modified by user". Loading the same directory
+with `--load-extension` keeps the path-derived ID and makes it controllable.
 
 Side effects, both acceptable:
 
