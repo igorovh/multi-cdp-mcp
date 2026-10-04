@@ -16,6 +16,8 @@ export interface EnvironmentRecord {
   extensionPaths: string[];
   profileMode: "template" | "fresh";
   devExtensionPaths: string[];
+  /** "Load unpacked" builds inherited from the template; resolved once per environment. */
+  templateUnpackedPaths?: string[];
   headless: boolean;
   /** Hints for crash recovery only; live process identity is always verified. */
   browserPid?: number;

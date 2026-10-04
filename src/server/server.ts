@@ -8,11 +8,23 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { BackendAdapter } from "../backend/adapter.ts";
 import type { ProxyConfig } from "../config.ts";
-import { EnvironmentManager } from "../environment/manager.ts";
+import { EnvironmentManager, type Route } from "../environment/manager.ts";
 import { errorMessage, log } from "../logging.ts";
+import { type CallerIdentity, missingIdentityMessage, resolveIdentity } from "./identity.ts";
+import { PageTools } from "./page-tools.ts";
 import { exposeDownstreamTools, MANAGEMENT_TOOL_NAMES, managementTools } from "./tools.ts";
 
 type Args = Record<string, unknown>;
+
+export const SERVER_INSTRUCTIONS = `Persistent, isolated Brave environments plus chrome-devtools tools.
+Identity: calls route by _meta.sessionID. If a call fails with "No caller identity", pass callerId: "<your session ID>" on every call (same value each time), or environmentId to address an environment directly.
+Environment: cdp_environment_create({name, headless?, fresh?, devExtensionPaths?}), cdp_environment_list(), cdp_environment_select({environmentId}), cdp_environment_stop({environmentId?}), cdp_environment_release().
+Extensions: cdp_extension_list() (check controllable), cdp_extension_set_enabled({extensionId, enabled}), cdp_extension_reload({extensionId}), install_extension({path}).
+Pages: list_pages(), select_page({pageId, bringToFront?}), new_page({url}), navigate_page({pageId, url, timeout?}), take_snapshot({pageId}), take_screenshot({pageId}).
+Input: click/hover({pageId, uid | selector | x+y, bringToFront?}), fill_form({pageId, elements}), press_key({pageId, key}).
+Script: evaluate_script({pageId, function, timeout?, bringToFront?}); keep in-page waits short.
+Debug: list_console_messages({pageId}), list_network_requests({pageId}).
+Hidden tabs throttle timers and requestAnimationFrame: pass bringToFront: true for timing-sensitive work.`;
 
 function text(value: unknown, isError = false): CallToolResult {
   return {
@@ -43,32 +55,40 @@ function stringArrayArg(args: Args, name: string): string[] {
   return value as string[];
 }
 
-function requestSessionId(
-  request: { params?: { _meta?: Record<string, unknown> } },
-  transportSessionId?: string,
-): string | undefined {
-  const openCodeSession = request.params?._meta?.sessionID;
-  if (typeof openCodeSession === "string" && openCodeSession.length > 0) return openCodeSession;
-  return transportSessionId;
+function withAccessHint(result: CallToolResult, name: string): CallToolResult {
+  if (!result.isError) return result;
+  const message = result.content.find((item) => item.type === "text");
+  if (!message || message.type !== "text" || !message.text.includes("Access denied")) return result;
+  return {
+    ...result,
+    content: [
+      ...result.content,
+      {
+        type: "text",
+        text:
+          `${name} may only read paths under the environment's devExtensionPaths, the OS temp ` +
+          "directory, or backend.filesystemRoots in the proxy config.json. Alternatively create " +
+          "an environment with devExtensionPaths: [<that directory>].",
+      },
+    ],
+  };
 }
 
 export class ProxyServer {
   readonly server: Server;
   readonly transport = new StdioServerTransport();
+  readonly #pageTools: PageTools;
   #closed = false;
 
   private constructor(
     private readonly manager: EnvironmentManager,
     private readonly tools: Tool[],
+    config: ProxyConfig,
   ) {
+    this.#pageTools = new PageTools(manager, config);
     this.server = new Server(
       { name: "multi-cdp-mcp", version: "0.1.0" },
-      {
-        capabilities: { tools: {} },
-        instructions:
-          "Browser calls are automatically routed by OpenCode session. Use cdp_environment_* " +
-          "for lifecycle and cdp_extension_* for extension state.",
-      },
+      { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
     );
     this.#registerHandlers();
     this.server.onclose = () => {
@@ -81,8 +101,11 @@ export class ProxyServer {
       EnvironmentManager.create(config),
       BackendAdapter.discoverTools(config),
     ]);
-    const tools = [...managementTools, ...exposeDownstreamTools(downstream)];
-    return new ProxyServer(manager, tools);
+    const tools = [
+      ...managementTools,
+      ...exposeDownstreamTools(downstream, { compact: config.backend.compactToolSchemas }),
+    ];
+    return new ProxyServer(manager, tools, config);
   }
 
   #registerHandlers(): void {
@@ -91,40 +114,54 @@ export class ProxyServer {
     this.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       const args = { ...(request.params.arguments ?? {}) } as Args;
       const name = request.params.name;
+      const meta = request.params._meta as Record<string, unknown> | undefined;
       const explicitEnvironment = stringArg(args, "environmentId", false);
-      const explicitCaller = stringArg(args, "callerId", false);
-
-      let sessionId = requestSessionId(request, extra.sessionId) ?? explicitCaller;
-      if (!sessionId && explicitEnvironment) sessionId = `explicit:${explicitEnvironment}`;
-      if (!sessionId) {
-        return text(
-          "No conversation identity was provided. OpenCode must send _meta.sessionID; " +
-            "other clients must pass environmentId.",
-          true,
-        );
-      }
+      const identity = resolveIdentity({
+        meta,
+        args,
+        transportSessionId: extra.sessionId,
+        allowNameIdentity: name === "cdp_environment_create",
+      });
+      delete args.callerId;
 
       try {
+        if (name === "cdp_environment_list") return text(this.manager.list(identity?.id ?? null));
+        if (!identity) return text(missingIdentityMessage(meta), true);
+        log.debug(`${name} from ${identity.id} (${identity.source})`);
+
         if (MANAGEMENT_TOOL_NAMES.has(name)) {
-          delete args.callerId;
-          if (explicitEnvironment && name.startsWith("cdp_extension_")) {
-            await this.manager.select(sessionId, explicitEnvironment);
-          }
-          return await this.#callManagement(name, args, sessionId);
+          return await this.#callManagement(name, args, identity, explicitEnvironment);
         }
 
         delete args.environmentId;
-        delete args.callerId;
-        if (explicitEnvironment) await this.manager.select(sessionId, explicitEnvironment);
-        return await this.manager.callBackend(sessionId, name, args, extra.signal);
+        const route = await this.#route(identity, explicitEnvironment);
+        if (this.#pageTools.handles(name)) {
+          return await this.#pageTools.call(route, name, args, extra.signal);
+        }
+        const result = await this.manager.callBackend(route, name, args, { signal: extra.signal });
+        return withAccessHint(result, name);
       } catch (error) {
-        log.warn(`${name} failed for ${sessionId}: ${errorMessage(error)}`);
+        log.warn(`${name} failed for ${identity?.id ?? "unknown caller"}: ${errorMessage(error)}`);
         return text(errorMessage(error), true);
       }
     });
   }
 
-  async #callManagement(name: string, args: Args, sessionId: string): Promise<CallToolResult> {
+  /** Explicit environments are bound for real identities and addressed directly otherwise. */
+  async #route(identity: CallerIdentity, explicitEnvironment?: string): Promise<Route> {
+    if (!explicitEnvironment) return { sessionId: identity.id };
+    if (identity.source === "environment") return { environmentId: explicitEnvironment };
+    await this.manager.select(identity.id, explicitEnvironment);
+    return { sessionId: identity.id };
+  }
+
+  async #callManagement(
+    name: string,
+    args: Args,
+    identity: CallerIdentity,
+    explicitEnvironment?: string,
+  ): Promise<CallToolResult> {
+    const sessionId = identity.id;
     switch (name) {
       case "cdp_environment_create": {
         const fresh = args.fresh === undefined ? false : booleanArg(args, "fresh");
@@ -134,19 +171,30 @@ export class ProxyServer {
           stringArg(args, "name", false),
           { fresh, headless, devExtensionPaths: stringArrayArg(args, "devExtensionPaths") },
         );
-        return text({ id: environment.id, state: environment.state, port: environment.record.port });
+        const view = this.manager.view(environment, sessionId);
+        return text({
+          id: environment.id,
+          state: environment.state,
+          port: environment.record.port,
+          extensionControl: view.extensionControl,
+          ...(view.extensionControlError ? { extensionControlError: view.extensionControlError } : {}),
+          ...(identity.source === "name"
+            ? { note: `No callerId was given; pass environmentId: "${environment.id}" on later calls.` }
+            : {}),
+        });
       }
-      case "cdp_environment_list":
-        return text(this.manager.list(sessionId));
       case "cdp_environment_select": {
         const environment = await this.manager.select(sessionId, stringArg(args, "environmentId")!);
         return text({ id: environment.id, state: environment.state, port: environment.record.port });
       }
       case "cdp_environment_stop": {
-        const id =
-          stringArg(args, "environmentId", false) ?? this.manager.boundEnvironmentId(sessionId);
-        if (!id) throw new Error("No environment selected and no environmentId was provided.");
-        await this.manager.stop(id, sessionId);
+        const id = explicitEnvironment ?? this.manager.boundEnvironmentId(sessionId);
+        if (!id) {
+          throw new Error(
+            "No environment is bound to this caller; pass environmentId (see cdp_environment_list).",
+          );
+        }
+        await this.manager.stop(id, sessionId, { explicit: explicitEnvironment !== undefined });
         return text({ id, state: "stopped", profilePreserved: true });
       }
       case "cdp_environment_release": {
@@ -168,10 +216,10 @@ export class ProxyServer {
         return text({ deleted, profilesDeleted: true });
       }
       case "cdp_extension_list":
-        return text(await this.manager.listExtensions(sessionId));
+        return text(await this.manager.listExtensions(await this.#route(identity, explicitEnvironment)));
       case "cdp_extension_set_enabled": {
         const result = await this.manager.setExtensionEnabled(
-          sessionId,
+          await this.#route(identity, explicitEnvironment),
           stringArg(args, "extensionId")!,
           booleanArg(args, "enabled"),
         );
@@ -179,7 +227,7 @@ export class ProxyServer {
       }
       case "cdp_extension_reload": {
         const result = await this.manager.reloadExtension(
-          sessionId,
+          await this.#route(identity, explicitEnvironment),
           stringArg(args, "extensionId")!,
         );
         return text(result, !result.ok);

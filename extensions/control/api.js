@@ -13,6 +13,8 @@ export function installApi(context) {
         installType: item.installType,
         type: item.type,
         mayDisable: item.mayDisable,
+        mayEnable: item.mayEnable,
+        disabledReason: item.disabledReason,
       }));
     },
 

@@ -12,6 +12,14 @@ OpenCode tools/call
           └─ dedicated chrome-devtools-mcp stdio client
 ```
 
+Identity comes from `_meta.sessionID`, then `callerId`, then an explicit `environmentId`;
+see "Caller identity" in [`CONFIGURATION.md`](./CONFIGURATION.md).
+
+`evaluate_script`, `click`, `hover`, `navigate_page` and `new_page` pass through a thin
+proxy layer (`src/server/page-tools.ts`): in-page timeouts, `bringToFront`, selector and
+coordinate input via CDP `Input.dispatchMouseEvent`, and page state after a navigation
+timeout. Every other tool is forwarded unchanged.
+
 The proxy discovers downstream tool schemas with a throwaway backend connected to an
 unreachable endpoint. `chrome-devtools-mcp` connects to a browser lazily, so discovery
 does not allocate a profile or launch Brave.
@@ -41,7 +49,9 @@ The CDP `Extensions` domain is unpacked-only and has no enable/disable method. T
 control extension holds `management` permission. The proxy attaches to its MV3 service
 worker and calls `chrome.management` through `Runtime.evaluate(userGesture: true)`.
 
-The debugger attachment keeps the service worker alive while the environment runs.
+The debugger attachment keeps the service worker alive while the environment runs. If the
+worker is missing, the proxy opens `chrome-extension://<id>/control.html` once to wake it
+(the ID is derived from the unpacked path) and retries on later extension calls.
 
 ## Deletion safety
 

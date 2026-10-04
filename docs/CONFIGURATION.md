@@ -43,11 +43,47 @@ their IDs and storage origins remain stable.
 Use `cdp_environment_create.devExtensionPaths` when different environments should load
 different worktree builds.
 
+Template extensions installed with "Load unpacked" (for example a local `dist` build) are
+reloaded through `--load-extension` as well, because their cloned install records are
+locked by Chromium. A `devExtensionPaths` build with the same manifest `name` replaces the
+template build in that environment.
+
+## Paths readable by `install_extension`
+
+`chrome-devtools-mcp` only accepts paths inside its workspace roots. The proxy passes:
+
+1. `<dataRoot>\artifacts\<environment-id>` (screenshots, traces);
+2. the OS temp directory (always allowed by the backend);
+3. `extensions.devExtensionPaths` and the environment's own `devExtensionPaths`;
+4. `backend.filesystemRoots`.
+
+Both sides are compared after `realpath`, so the result is deterministic. A junction that
+points outside a root (for example a worktree directory linked to another drive) is
+rejected; add its real target instead.
+
+```json
+{
+  "backend": {
+    "filesystemRoots": ["E:\\Projects"],
+    "compactToolSchemas": true
+  }
+}
+```
+
+`compactToolSchemas` shortens downstream descriptions to their first sentence.
+
 ## Browser and limits
 
 `browser.portRange` is local-only and one port is reserved atomically per running
 environment. `limits.maxEnvironments` limits concurrently starting/running environments;
 stopped profiles do not consume a slot.
+
+`limits.toolTimeoutMs` (default 150 s) bounds every proxy-to-backend call and stays below
+Puppeteer's fixed 180 s `protocolTimeout`, which `chrome-devtools-mcp` does not expose.
+`evaluate_script` also gets an in-page time limit (its `timeout` argument, default
+`toolTimeoutMs - 20 s`, max 170 s), so a stuck script ends instead of holding the backend.
+`limits.navigationTimeoutMs` (default 30 s) applies to `navigate_page`/`new_page` when no
+`timeout` is passed.
 
 `browser.headless` defaults to `true`. Agents can override it per environment with
 `cdp_environment_create({ headless: false })`; the choice is persisted with that profile.
@@ -81,7 +117,23 @@ Project-local configuration:
 }
 ```
 
-OpenCode V2 sends the invoking session as `_meta.sessionID` for both direct and Code Mode
-calls. Other MCP clients pass `callerId` to management tools and can pass the optional
-`environmentId` exposed on downstream and extension tools. The proxy never falls back to
-one implicit global browser when caller identity is absent.
+### Caller identity
+
+The server runs over stdio, so there are no request headers and no transport session ID.
+The only per-call identity is in the request. Precedence:
+
+1. `_meta.sessionID` (also `_meta.sessionId`, `_meta["opencode/sessionID"]`);
+2. the `callerId` argument;
+3. the transport session ID (only for session-aware transports);
+4. `explicit:<environmentId>` when only `environmentId` is passed, or
+   `explicit:<name>` for `cdp_environment_create` with a `name`.
+
+Direct OpenCode tool calls send `_meta.sessionID`. Calls made through Code Mode `execute`
+currently do not (see [`opencode-upstream.md`](./opencode-upstream.md)); pass `callerId`
+there. `cdp_environment_list` needs no identity. The proxy never falls back to one
+implicit global browser.
+
+Calls with an explicit `environmentId` and no other identity are routed to that environment
+without changing its binding. `cdp_environment_stop` with an explicit `environmentId` works
+for any idle environment, because stopping keeps the profile. Deletion still requires the
+owner, or a takeover with `cdp_environment_select` first.
