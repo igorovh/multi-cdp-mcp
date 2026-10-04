@@ -27,17 +27,55 @@ Close every Brave window and verify no `brave.exe` remains before setting
 Website sessions can expire or be revoked server-side. A one-time login inside a persistent
 environment is retained across stop/resume even when the original session did not clone.
 
-## Extensions disappear after the first restart
+## "No caller identity"
+
+The client sent no `_meta.sessionID` (OpenCode Code Mode `execute` currently does not; see
+[`opencode-upstream.md`](./opencode-upstream.md)). Pass `callerId: "<session ID>"` on every
+call, or `environmentId` to address an environment directly.
+
+## "Environment ... belongs to caller ..."
+
+The environment was bound under another identity, for example created with `callerId`
+and later stopped without it. The error names the owner. Repeat the call with that
+`callerId`, or pass `environmentId` explicitly to `cdp_environment_stop`. Deletion requires
+a takeover with `cdp_environment_select` first.
+
+## Extensions disappear after a restart
 
 Keep `extensions.materializeProfileExtensions: true`. See finding 2 in
-[`findings.md`](./findings.md). Deleting extension paths from `Secure Preferences` or from
-the profile's `Default\Extensions` directory makes materialization impossible.
+[`findings.md`](./findings.md). After the first launch Chromium no longer stores the
+manifest in `Secure Preferences`; the proxy then finds each extension through the `key`
+it wrote into `Default\Extensions\<id>\<version>\manifest.json`. Deleting those
+directories makes recovery impossible.
+
+## "cannot be modified by user"
+
+Chromium locks an extension whose cloned install record it does not trust; this affected
+"Load unpacked" builds inherited from the template. New starts reload those builds through
+`--load-extension`, which makes them controllable. `cdp_extension_list` reports
+`controllable: false` and a `lockedReason` for anything still locked.
 
 ## Enable/disable says control is unavailable
 
-Check that `extensions.controlExtensionPath` points to `extensions\control` and inspect the
-corresponding `brave-<port>.log` under `<dataRoot>\logs`. Brave must be launched with the
-control directory in `--load-extension`.
+The error and `cdp_environment_list` (`extensionControl`, `extensionControlError`) give
+the reason. The proxy retries the attach on every extension call and wakes a dormant
+control worker by opening its page. If it still fails, check that
+`extensions.controlExtensionPath` points to `extensions\control`, inspect
+`brave-<port>.log` under `<dataRoot>\logs`, then `cdp_environment_stop` and retry; a
+browser recovered after a proxy crash keeps the flags it was launched with.
+
+## `install_extension` says "Access denied"
+
+The backend only reads paths under its roots; see "Paths readable by `install_extension`"
+in [`CONFIGURATION.md`](./CONFIGURATION.md). It is deterministic: OS-temp paths work, other
+paths need `backend.filesystemRoots` or the environment's `devExtensionPaths`.
+
+## Timeouts and background tabs
+
+Hidden tabs throttle timers and `requestAnimationFrame`. Pass `bringToFront: true` to
+`evaluate_script`, `click` or `hover`, and keep in-page waits short. `evaluate_script`
+accepts `timeout` (ms). A navigation timeout returns the page's current URL and
+`readyState`; the page has usually loaded.
 
 ## Environment is locked
 

@@ -1,4 +1,4 @@
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join, relative, resolve } from "node:path";
 import { BackendAdapter } from "../backend/adapter.ts";
@@ -13,6 +13,7 @@ import {
 } from "../browser/brave.ts";
 import { CdpClient } from "../browser/cdp.ts";
 import { ExtensionControl } from "../browser/control.ts";
+import { PageInput } from "../browser/input.ts";
 import {
   environmentsDir,
   logsDir,
@@ -21,24 +22,50 @@ import {
 } from "../config.ts";
 import { errorMessage, log } from "../logging.ts";
 import {
+  dedupePaths,
+  extensionIdFromPath,
+  manifestName,
+  prepareUnpackedExtensions,
+  unpackedSourceExtensions,
+} from "../profile/extensions.ts";
+import {
   acquireProfileLock,
   cloneEnvironment,
   createFreshProfile,
   prepareTemplate,
-  prepareUnpackedExtensions,
 } from "../profile/manager.ts";
 import { EnvironmentRegistry, type EnvironmentRecord } from "./registry.ts";
 
 export type EnvironmentState = "stopped" | "starting" | "running" | "failed";
 
+export type ExtensionControlState = "available" | "unavailable" | "not-running";
+
 export interface EnvironmentView
   extends Omit<
     EnvironmentRecord,
-    "ownerSessionId" | "extensionPaths" | "devExtensionPaths" | "browserPid"
+    | "ownerSessionId"
+    | "extensionPaths"
+    | "devExtensionPaths"
+    | "browserPid"
+    | "templateUnpackedPaths"
   > {
   state: EnvironmentState;
   ownedByCaller: boolean;
   owner: "self" | "other" | null;
+  ownerId: string | null;
+  devExtensionPaths: string[];
+  extensionControl: ExtensionControlState;
+  extensionControlError?: string;
+  lastError?: string;
+}
+
+/** Either the caller's bound environment or one addressed explicitly by ID. */
+export type Route = { sessionId: string; environmentId?: undefined } | { environmentId: string };
+
+export interface ListedExtension extends ManagedExtension {
+  source: "control" | "dev" | "profile" | "template-unpacked" | "other";
+  controllable: boolean;
+  lockedReason?: string;
 }
 
 interface RunningParts {
@@ -46,7 +73,28 @@ interface RunningParts {
   backend: BackendAdapter;
   cdp: CdpClient;
   control: ExtensionControl | null;
+  input: PageInput;
   releaseLock: () => Promise<void>;
+}
+
+function withHint(result: ManagementResult): ManagementResult {
+  if (result.ok || !result.error) return result;
+  if (result.error.includes("cannot be modified by user")) {
+    return {
+      ...result,
+      hint:
+        "Chromium locks this extension, usually because its install record was cloned from " +
+        "the template. cdp_extension_list shows lockedReason. Load its directory through " +
+        "devExtensionPaths in a new environment to control it.",
+    };
+  }
+  if (result.error.includes("Failed to find extension")) {
+    return {
+      ...result,
+      hint: "The extension is not loaded in this environment; check cdp_extension_list for IDs.",
+    };
+  }
+  return result;
 }
 
 class Environment {
@@ -55,6 +103,7 @@ class Environment {
   /** Number of tool calls in flight; an environment is never evicted while non-zero. */
   activeCalls = 0;
   lastError: string | null = null;
+  controlError: string | null = null;
 
   constructor(
     readonly record: EnvironmentRecord,
@@ -120,22 +169,44 @@ export class EnvironmentManager {
     throw new Error(`No free debugging port in range ${start}-${end}.`);
   }
 
-  list(sessionId: string): EnvironmentView[] {
-    return [...this.#environments.values()].map((environment) => {
-      const {
-        ownerSessionId,
-        extensionPaths: _extensionPaths,
-        devExtensionPaths: _devExtensionPaths,
-        browserPid: _browserPid,
-        ...record
-      } = environment.record;
-      return {
-        ...record,
-        state: environment.state,
-        ownedByCaller: ownerSessionId === sessionId,
-        owner: ownerSessionId === sessionId ? "self" : ownerSessionId ? "other" : null,
-      };
-    });
+  list(sessionId: string | null): EnvironmentView[] {
+    return [...this.#environments.values()].map((environment) => this.view(environment, sessionId));
+  }
+
+  view(environment: Environment, sessionId: string | null): EnvironmentView {
+    const {
+      ownerSessionId,
+      extensionPaths: _extensionPaths,
+      templateUnpackedPaths: _templateUnpackedPaths,
+      browserPid: _browserPid,
+      ...record
+    } = environment.record;
+    const self = sessionId !== null && ownerSessionId === sessionId;
+    return {
+      ...record,
+      state: environment.state,
+      ownedByCaller: self,
+      owner: self ? "self" : ownerSessionId ? "other" : null,
+      ownerId: ownerSessionId,
+      extensionControl: !environment.running
+        ? "not-running"
+        : environment.running.control
+          ? "available"
+          : "unavailable",
+      ...(environment.controlError ? { extensionControlError: environment.controlError } : {}),
+      ...(environment.lastError ? { lastError: environment.lastError } : {}),
+    };
+  }
+
+  #ownershipError(id: string, owner: string, sessionId: string, action: "stop" | "delete"): Error {
+    const recovery =
+      action === "stop"
+        ? `pass environmentId: "${id}" explicitly`
+        : `take it over first with cdp_environment_select({ environmentId: "${id}" })`;
+    return new Error(
+      `Environment "${id}" belongs to caller "${owner}", not "${sessionId}". To ${action} it, ` +
+        `call again with callerId: "${owner}", or ${recovery}.`,
+    );
   }
 
   /** Lazily creates and binds an environment the first time a session touches the browser. */
@@ -242,11 +313,14 @@ export class EnvironmentManager {
     return id;
   }
 
-  async stop(id: string, sessionId: string): Promise<void> {
+  /** Stop keeps the profile, so an explicitly named environment may be stopped by any caller. */
+  async stop(id: string, sessionId: string, options: { explicit?: boolean } = {}): Promise<void> {
     const environment = this.#environments.get(id);
     if (!environment) throw new Error(`Unknown environment "${id}".`);
-    if (environment.record.ownerSessionId && environment.record.ownerSessionId !== sessionId) {
-      throw new Error(`Environment "${id}" belongs to another conversation.`);
+    const owner = environment.record.ownerSessionId;
+    if (owner && owner !== sessionId) {
+      if (!options.explicit) throw this.#ownershipError(id, owner, sessionId, "stop");
+      log.warn(`Environment ${id} owned by ${owner} stopped explicitly by ${sessionId}`);
     }
     if (environment.activeCalls > 0) {
       throw new Error(`Environment "${id}" has ${environment.activeCalls} call(s) in flight.`);
@@ -260,9 +334,8 @@ export class EnvironmentManager {
   async delete(id: string, sessionId: string, force = false): Promise<void> {
     const environment = this.#environments.get(id);
     if (!environment) throw new Error(`Unknown environment "${id}".`);
-    if (environment.record.ownerSessionId && environment.record.ownerSessionId !== sessionId) {
-      throw new Error(`Environment "${id}" belongs to another conversation.`);
-    }
+    const owner = environment.record.ownerSessionId;
+    if (owner && owner !== sessionId) throw this.#ownershipError(id, owner, sessionId, "delete");
     if (environment.activeCalls > 0 || environment.state === "starting") {
       throw new Error(`Environment "${id}" is busy and cannot be deleted.`);
     }
@@ -370,6 +443,9 @@ export class EnvironmentManager {
           await createFreshProfile(environment.record.profileDir);
         } else {
           await cloneEnvironment(await this.#ensureTemplate(), environment.record.profileDir);
+          environment.record.templateUnpackedPaths = (
+            await unpackedSourceExtensions(environment.record.profileDir)
+          ).map((extension) => extension.path);
         }
         environment.record.seeded = true;
         await this.registry.upsert(environment.record);
@@ -386,10 +462,7 @@ export class EnvironmentManager {
           remoteDebuggingPort: environment.record.port,
         });
 
-        if (!brave && this.config.extensions.materializeProfileExtensions) {
-          const unpacked = await prepareUnpackedExtensions(environment.record.profileDir);
-          environment.record.extensionPaths = unpacked.map((extension) => extension.path);
-        }
+        const extensionPaths = brave ? [] : await this.#extensionPaths(environment);
 
         const port = brave?.port ?? (await this.#allocatePort());
         if (brave) {
@@ -408,12 +481,7 @@ export class EnvironmentManager {
           headless: environment.record.headless,
           extraArgs: this.config.browser.extraArgs,
           timeoutMs: this.config.limits.startupTimeoutMs,
-          extensionPaths: [
-            this.config.extensions.controlExtensionPath,
-            ...this.config.extensions.devExtensionPaths,
-            ...environment.record.devExtensionPaths,
-            ...environment.record.extensionPaths,
-          ],
+          extensionPaths,
         });
 
         cdp = await CdpClient.connect(brave.webSocketDebuggerUrl);
@@ -421,18 +489,18 @@ export class EnvironmentManager {
           environmentId: environment.id,
           browserUrl: `http://127.0.0.1:${port}`,
           logDir: logsDir(this.config),
-          filesystemRoot: join(this.config.dataRoot, "artifacts", environment.id),
+          filesystemRoots: [
+            join(this.config.dataRoot, "artifacts", environment.id),
+            ...this.config.backend.filesystemRoots,
+            ...this.config.extensions.devExtensionPaths,
+            ...environment.record.devExtensionPaths,
+          ],
         });
 
         // Optional: without it, enable/disable is unavailable but everything else works.
-        let control: ExtensionControl | null = null;
-        try {
-          control = await ExtensionControl.attach(cdp, { waitMs: 10_000 });
-        } catch (error) {
-          log.warn(`No extension control for ${environment.id}: ${errorMessage(error)}`);
-        }
+        const control = await this.#attachControl(environment, cdp, 10_000);
 
-        environment.running = { brave, backend, cdp, control, releaseLock };
+        environment.running = { brave, backend, cdp, control, input: new PageInput(cdp), releaseLock };
         environment.state = "running";
         environment.lastError = null;
         environment.record.lastUsedAt = new Date().toISOString();
@@ -456,62 +524,188 @@ export class EnvironmentManager {
     }
   }
 
+  /**
+   * Template "load unpacked" builds are reloaded via --load-extension so they stay
+   * controllable; a dev build with the same manifest name replaces them.
+   */
+  async #extensionPaths(environment: Environment): Promise<string[]> {
+    const record = environment.record;
+    const devPaths = [...this.config.extensions.devExtensionPaths, ...record.devExtensionPaths];
+
+    if (this.config.extensions.materializeProfileExtensions) {
+      const unpacked = await prepareUnpackedExtensions(record.profileDir);
+      record.extensionPaths = unpacked.map((extension) => extension.path);
+      if (record.profileMode === "template" && record.templateUnpackedPaths === undefined) {
+        // Environments seeded before this field existed: the template still has the records.
+        const template = templateDir(this.config);
+        record.templateUnpackedPaths = (await unpackedSourceExtensions(template)).map((e) => e.path);
+      }
+    }
+
+    const devNames = new Set(
+      (await Promise.all(devPaths.map((path) => manifestName(path)))).filter(
+        (name): name is string => name !== null,
+      ),
+    );
+    const templateUnpacked: string[] = [];
+    for (const path of record.templateUnpackedPaths ?? []) {
+      const name = await manifestName(path);
+      if (name === null) continue;
+      if (devNames.has(name)) {
+        log.info(`Skipping template build of "${name}" in ${record.id}; a dev build replaces it`);
+        continue;
+      }
+      templateUnpacked.push(path);
+    }
+
+    try {
+      await stat(join(this.config.extensions.controlExtensionPath, "manifest.json"));
+      environment.controlError = null;
+    } catch {
+      environment.controlError =
+        `control extension missing at ${this.config.extensions.controlExtensionPath} ` +
+        "(check extensions.controlExtensionPath in config.json)";
+    }
+
+    await this.registry.upsert(record);
+    return dedupePaths([
+      this.config.extensions.controlExtensionPath,
+      ...devPaths,
+      ...record.extensionPaths,
+      ...templateUnpacked,
+    ]);
+  }
+
+  async #attachControl(
+    environment: Environment,
+    cdp: CdpClient,
+    waitMs: number,
+  ): Promise<ExtensionControl | null> {
+    try {
+      const control = await ExtensionControl.attach(cdp, {
+        waitMs,
+        expectedId: extensionIdFromPath(this.config.extensions.controlExtensionPath),
+      });
+      environment.controlError = null;
+      return control;
+    } catch (error) {
+      environment.controlError ??= errorMessage(error);
+      log.warn(`No extension control for ${environment.id}: ${environment.controlError}`);
+      return null;
+    }
+  }
+
+  /** Re-attaches lazily, because a dormant or restarted worker makes the first attach fail. */
+  async #control(environment: Environment): Promise<ExtensionControl> {
+    const running = environment.running;
+    if (!running) throw new Error(`Environment ${environment.id} is not running.`);
+    if (running.control && (await running.control.alive())) return running.control;
+    running.control = await this.#attachControl(environment, running.cdp, 3_000);
+    if (running.control) return running.control;
+    throw new Error(
+      `Extension control is unavailable in ${environment.id}: ${environment.controlError}. ` +
+        "Enable/disable/reload need the bundled control extension, which the proxy loads " +
+        "with --load-extension when it launches Brave. Recover with cdp_environment_stop " +
+        "and retry (the next call relaunches Brave), or create a new environment. " +
+        "Downstream tools such as install_extension and list_extensions do not need it.",
+    );
+  }
+
+  async #resolve(route: Route): Promise<Environment> {
+    if (route.environmentId === undefined) return await this.resolveForSession(route.sessionId);
+    const environment = this.#environments.get(route.environmentId);
+    if (!environment) throw new Error(`Unknown environment "${route.environmentId}".`);
+    return await this.#ensureRunning(environment);
+  }
+
   async withEnvironment<T>(
-    sessionId: string,
-    fn: (environment: Environment) => Promise<T>,
+    route: Route,
+    fn: (environment: Environment, running: RunningParts) => Promise<T>,
   ): Promise<T> {
-    const environment = await this.resolveForSession(sessionId);
+    const environment = await this.#resolve(route);
     environment.activeCalls += 1;
     try {
-      return await fn(environment);
+      if (!environment.running) throw new Error(`Environment ${environment.id} is not running.`);
+      return await fn(environment, environment.running);
     } finally {
       environment.activeCalls -= 1;
     }
   }
 
   async callBackend(
-    sessionId: string,
+    route: Route,
     name: string,
     args: Record<string, unknown>,
-    signal?: AbortSignal,
+    options: { signal?: AbortSignal; timeoutMs?: number } = {},
   ): Promise<CallToolResult> {
-    return await this.withEnvironment(sessionId, async (environment) => {
-      if (!environment.running) throw new Error(`Environment ${environment.id} is not running.`);
-      return await environment.running.backend.call(name, args, signal);
+    return await this.withEnvironment(route, async (_environment, running) => {
+      return await running.backend.call(name, args, options);
     });
   }
 
-  async listExtensions(sessionId: string): Promise<ManagedExtension[]> {
-    return await this.withEnvironment(sessionId, async (environment) => {
-      const control = environment.running?.control;
-      if (!control) throw new Error(`Extension control is unavailable in ${environment.id}.`);
-      return await control.list();
+  async listExtensions(route: Route): Promise<ListedExtension[]> {
+    return await this.withEnvironment(route, async (environment) => {
+      const control = await this.#control(environment);
+      const record = environment.record;
+      const ids = (paths: string[]) => new Set(paths.map((path) => extensionIdFromPath(path)));
+      const dev = ids([...this.config.extensions.devExtensionPaths, ...record.devExtensionPaths]);
+      const templateUnpacked = ids(record.templateUnpackedPaths ?? []);
+      const profile = new Set(
+        record.extensionPaths
+          .map((path) => path.split(/[\\/]/).at(-2))
+          .filter((id): id is string => Boolean(id)),
+      );
+      return (await control.list()).map((extension) => {
+        const source: ListedExtension["source"] =
+          extension.id === control.extensionId
+            ? "control"
+            : dev.has(extension.id)
+              ? "dev"
+              : profile.has(extension.id)
+                ? "profile"
+                : templateUnpacked.has(extension.id)
+                  ? "template-unpacked"
+                  : "other";
+        const locked = extension.enabled ? !extension.mayDisable : extension.mayEnable === false;
+        return {
+          ...extension,
+          source,
+          controllable: source !== "control" && !locked,
+          ...(locked
+            ? {
+                lockedReason:
+                  `Chromium will not let it be ${extension.enabled ? "disabled" : "enabled"}` +
+                  (extension.disabledReason ? ` (disabledReason: ${extension.disabledReason})` : "") +
+                  ". Usually a cloned install record; pass its directory in devExtensionPaths " +
+                  "of a new environment.",
+              }
+            : {}),
+        };
+      });
     });
   }
 
   async setExtensionEnabled(
-    sessionId: string,
+    route: Route,
     extensionId: string,
     enabled: boolean,
   ): Promise<ManagementResult> {
-    return await this.withEnvironment(sessionId, async (environment) => {
-      const control = environment.running?.control;
-      if (!control) throw new Error(`Extension control is unavailable in ${environment.id}.`);
+    return await this.withEnvironment(route, async (environment) => {
+      const control = await this.#control(environment);
       if (extensionId === control.extensionId) {
         throw new Error("The control extension cannot disable itself.");
       }
-      return await control.setEnabled(extensionId, enabled);
+      return withHint(await control.setEnabled(extensionId, enabled));
     });
   }
 
-  async reloadExtension(sessionId: string, extensionId: string): Promise<ManagementResult> {
-    return await this.withEnvironment(sessionId, async (environment) => {
-      const control = environment.running?.control;
-      if (!control) throw new Error(`Extension control is unavailable in ${environment.id}.`);
+  async reloadExtension(route: Route, extensionId: string): Promise<ManagementResult> {
+    return await this.withEnvironment(route, async (environment) => {
+      const control = await this.#control(environment);
       if (extensionId === control.extensionId) {
         throw new Error("The control extension cannot reload itself.");
       }
-      return await control.reload(extensionId);
+      return withHint(await control.reload(extensionId));
     });
   }
 

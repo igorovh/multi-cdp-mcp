@@ -14,7 +14,9 @@
   },
   "backend": {
     "runtime": "bun",
-    "enableExtensionTools": true
+    "enableExtensionTools": true,
+    "filesystemRoots": [],
+    "compactToolSchemas": true
   },
   "browser": {
     "headless": true,
@@ -27,6 +29,7 @@
   "limits": {
     "maxEnvironments": 8,
     "startupTimeoutMs": 60000,
-    "toolTimeoutMs": 120000
+    "toolTimeoutMs": 150000,
+    "navigationTimeoutMs": 30000
   }
 }

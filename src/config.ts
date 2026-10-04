@@ -32,6 +32,10 @@ export interface ProxyConfig {
     entrypoint: string;
     runtime: "bun" | "node";
     enableExtensionTools: boolean;
+    /** Extra directories that path-taking tools such as install_extension may read. */
+    filesystemRoots: string[];
+    /** Shorten downstream tool descriptions to reduce tool-discovery tokens. */
+    compactToolSchemas: boolean;
   };
   browser: {
     headless: boolean;
@@ -42,7 +46,10 @@ export interface ProxyConfig {
   limits: {
     maxEnvironments: number;
     startupTimeoutMs: number;
+    /** Proxy-to-backend call timeout; stays below Puppeteer's fixed 180 s protocolTimeout. */
     toolTimeoutMs: number;
+    /** Default navigate_page timeout when the caller passes none. */
+    navigationTimeoutMs: number;
   };
 }
 
@@ -74,6 +81,8 @@ function defaults(): ProxyConfig {
       ),
       runtime: "bun",
       enableExtensionTools: true,
+      filesystemRoots: [],
+      compactToolSchemas: true,
     },
     browser: {
       headless: true,
@@ -83,7 +92,8 @@ function defaults(): ProxyConfig {
     limits: {
       maxEnvironments: 8,
       startupTimeoutMs: 60_000,
-      toolTimeoutMs: 120_000,
+      toolTimeoutMs: 150_000,
+      navigationTimeoutMs: 30_000,
     },
   };
 }

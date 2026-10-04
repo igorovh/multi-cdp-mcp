@@ -10,8 +10,8 @@ OpenCode session C ─┘                 ─ environment C ─ Brave profile C
 ```
 
 The proxy keeps the official `chrome-devtools-mcp` tools and routes calls using
-`CallToolRequest.params._meta.sessionID`. No model-visible environment ID is needed for
-normal OpenCode calls.
+`CallToolRequest.params._meta.sessionID`. OpenCode Code Mode `execute` does not send it
+yet, so those calls pass `callerId` (see [`docs/opencode-upstream.md`](./docs/opencode-upstream.md)).
 
 ## Status
 
@@ -97,11 +97,13 @@ Copy [`config.example.json`](./config.example.json) to
 | `cdp_environment_release` | Release a binding without stopping the browser |
 | `cdp_environment_delete` | Permanently delete one profile; running ones require `force` |
 | `cdp_environment_delete_all` | Delete all profiles after confirmation; running ones require `force` |
-| `cdp_extension_list` | List every extension, including enabled state |
+| `cdp_extension_list` | List every extension with enabled state, source and `controllable` |
 | `cdp_extension_set_enabled` | Enable or disable any extension by ID |
 | `cdp_extension_reload` | Reload any extension by disabling and re-enabling it |
 
-All 34 downstream DevTools tools retain their original names and result structures.
+All 34 downstream DevTools tools retain their original names and result structures. The
+proxy adds `timeout` and `bringToFront` to `evaluate_script`, and `selector`, `x`/`y` and
+`bringToFront` to `click` and `hover`.
 
 Brave runs headless by default. An agent can pass `headless: false` to
 `cdp_environment_create` when a visible window is needed for login or extension UI work.
