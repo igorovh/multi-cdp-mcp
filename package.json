@@ -38,7 +38,7 @@
     "LICENSE"
   ],
   "engines": {
-    "bun": ">=1.2.0"
+    "bun": "1.4.4"
   },
   "scripts": {
     "start": "bun run src/index.ts",
