@@ -58,7 +58,7 @@ describe("profile extension materialisation", () => {
     const preferences = join(root, "Default", "Secure Preferences");
     await writeJson(preferences, {
       extensions: {
-        settings: { [id]: { path: `${id}\\1.0.0_0`, manifest: { name: "7TV", version: "1.0.0", key } } },
+        settings: { [id]: { path: join(id, "1.0.0_0"), manifest: { name: "7TV", version: "1.0.0", key } } },
       },
     });
 
@@ -68,7 +68,7 @@ describe("profile extension materialisation", () => {
 
     // After the first launch Chromium rewrites the record as a command-line extension.
     await writeJson(preferences, {
-      extensions: { settings: { [id]: { path: `${id}\\1.0.0_0`, location: 8, disable_reasons: [1] } } },
+      extensions: { settings: { [id]: { path: join(id, "1.0.0_0"), location: 8, disable_reasons: [1] } } },
     });
     const second = await prepareUnpackedExtensions(root);
     expect(second.map((extension) => extension.path)).toEqual([directory]);

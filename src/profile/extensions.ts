@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, posix, win32 } from "node:path";
 import { log } from "../logging.ts";
 
 export interface ProfileExtension {
@@ -26,11 +26,11 @@ export function extensionIdFromKey(base64Key: string): string {
 /** Mirrors crx_file::id_util::GenerateIdForPath, including Windows drive-letter normalisation. */
 export function extensionIdFromPath(path: string, platform = process.platform): string {
   if (platform === "win32") {
-    let normalized = resolve(path);
+    let normalized = win32.resolve(path);
     if (/^[a-z]:/.test(normalized)) normalized = normalized[0]!.toUpperCase() + normalized.slice(1);
     return idFromDigest(Buffer.from(normalized, "utf16le"));
   }
-  return idFromDigest(Buffer.from(resolve(path), "utf8"));
+  return idFromDigest(Buffer.from(posix.resolve(path), "utf8"));
 }
 
 function compareVersions(a: string, b: string): number {
@@ -216,7 +216,8 @@ export function dedupePaths(paths: string[], platform = process.platform): strin
   const seen = new Set<string>();
   const result: string[] = [];
   for (const path of paths) {
-    const key = platform === "win32" || platform === "darwin" ? resolve(path).toLowerCase() : resolve(path);
+    const resolved = platform === "win32" ? win32.resolve(path) : posix.resolve(path);
+    const key = platform === "win32" || platform === "darwin" ? resolved.toLowerCase() : resolved;
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(path);
