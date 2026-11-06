@@ -1,8 +1,32 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "dependencyDashboard": true,
   "rangeStrategy": "pin",
+  "platformAutomerge": true,
+  "automergeType": "pr",
+  "rebaseWhen": "behind-base-branch",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true,
+    "schedule": ["before 6am on monday"]
+  },
   "packageRules": [
+    {
+      "description": "Merge minor, patch, pin and digest updates once the required CI checks pass.",
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "automerge": true
+    },
+    {
+      "description": "Majors automerge too; the branch ruleset requires green CI, so a breaking major stays open.",
+      "matchUpdateTypes": ["major"],
+      "automerge": true
+    },
+    {
+      "description": "engines is a promise to users, not a lock; keep it a range.",
+      "matchDepTypes": ["engines"],
+      "rangeStrategy": "auto"
+    },
     {
       "matchManagers": ["github-actions"],
       "groupName": "GitHub Actions"
