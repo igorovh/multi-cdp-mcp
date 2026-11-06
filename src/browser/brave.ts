@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { log } from "../logging.ts";
 
 export interface LaunchOptions {
@@ -134,8 +134,9 @@ export async function reconnectBrave(options: {
   remoteDebuggingPort: number;
 }): Promise<BraveProcess | null> {
   if (process.platform !== "win32" || options.remoteDebuggingPort <= 0) return null;
+  const imageName = basename(options.executable).replaceAll("'", "''");
   const script =
-    "Get-CimInstance Win32_Process -Filter \"Name = 'brave.exe'\" | " +
+    `Get-CimInstance Win32_Process -Filter "Name = '${imageName}'" | ` +
     "Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress";
   const proc = Bun.spawn(["powershell", "-NoProfile", "-Command", script], {
     stdout: "pipe",
