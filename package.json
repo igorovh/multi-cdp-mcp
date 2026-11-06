@@ -1,6 +1,6 @@
 {
   "name": "multi-cdp-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "MCP server that gives every AI agent session its own persistent, isolated Chromium browser (Chrome, Edge, Brave, Chromium) with extension control. Built on chrome-devtools-mcp.",
   "keywords": [
     "mcp",
@@ -32,6 +32,7 @@
   "files": [
     "src",
     "!src/**/*.test.ts",
+    "!src/**/__fixtures__",
     "extensions/control",
     ".opencode/skills",
     "README.md",

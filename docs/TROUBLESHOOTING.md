@@ -6,7 +6,7 @@
 opencode mcp list
 ```
 
-Run the configured command by hand (for example `bunx github:igorovh/multi-cdp-mcp#v0.2.0`). Stderr
+Run the configured command by hand (for example `bunx github:igorovh/multi-cdp-mcp#v0.2.1`). Stderr
 shows the reason: an invalid `config.json` names the bad field, and `braveExecutable`
 must be renamed to `browser.executable`. Restart OpenCode after changing MCP configuration.
 

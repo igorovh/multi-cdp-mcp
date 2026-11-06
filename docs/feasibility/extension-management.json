@@ -1,0 +1,38 @@
+[
+  {
+    "name": "attach to control",
+    "status": "pass",
+    "detail": "service worker (service-worker)",
+    "durationMs": 0
+  },
+  {
+    "name": "list via chrome.management",
+    "status": "pass",
+    "detail": "9 total, 6 from the Web Store",
+    "durationMs": 0
+  },
+  {
+    "name": "disable fixture",
+    "status": "pass",
+    "detail": "marker before=loaded after=absent; no error",
+    "durationMs": 0
+  },
+  {
+    "name": "re-enable fixture",
+    "status": "pass",
+    "detail": "marker=loaded; no error",
+    "durationMs": 0
+  },
+  {
+    "name": "disable web store extension",
+    "status": "pass",
+    "detail": "BetterTTV: workers 8 -> 7; no error",
+    "durationMs": 0
+  },
+  {
+    "name": "disabled state persists",
+    "status": "fail",
+    "detail": "Disabled ajopnjidmegmdimjlfnijceegpefgped; after restart it is missing from getAll()",
+    "durationMs": 0
+  }
+]
