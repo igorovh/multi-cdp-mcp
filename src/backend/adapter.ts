@@ -6,6 +6,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { ProxyConfig } from "../config.ts";
 import { errorMessage, log } from "../logging.ts";
+import { VERSION } from "../version.ts";
 
 export interface BackendOptions {
   environmentId: string;
@@ -54,7 +55,7 @@ export class BackendAdapter {
       stderr: "pipe",
     });
 
-    const client = new Client({ name: "multi-cdp-mcp", version: "0.1.0" });
+    const client = new Client({ name: "multi-cdp-mcp", version: VERSION });
     await client.connect(transport);
     transport.stderr?.pipe(logStream);
 
@@ -77,7 +78,7 @@ export class BackendAdapter {
       args: buildArgs(config, { browserUrl: "http://127.0.0.1:1" }),
       stderr: "ignore",
     });
-    const client = new Client({ name: "multi-cdp-mcp-discovery", version: "0.1.0" });
+    const client = new Client({ name: "multi-cdp-mcp-discovery", version: VERSION });
     await client.connect(transport);
     try {
       const { tools } = await client.listTools();

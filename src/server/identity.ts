@@ -6,7 +6,12 @@ export interface CallerIdentity {
 }
 
 /** `_meta` keys accepted as a conversation ID, most specific first. */
-export const META_IDENTITY_KEYS = ["sessionID", "sessionId", "opencode/sessionID"] as const;
+export const META_IDENTITY_KEYS = [
+  "ai.opencode/sessionID",
+  "sessionID",
+  "sessionId",
+  "opencode/sessionID",
+] as const;
 
 function nonEmpty(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;

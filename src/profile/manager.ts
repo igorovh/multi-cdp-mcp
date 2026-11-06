@@ -2,6 +2,9 @@ import { cp, mkdir, open, readFile, readdir, rm, stat, writeFile } from "node:fs
 import { join, relative, sep } from "node:path";
 import { log } from "../logging.ts";
 
+/** Profiles hold cookies and sessions; ignored on Windows. */
+export const PRIVATE_DIR = 0o700;
+
 /** Process-bound files and large rebuildable caches that must not enter a clone. */
 const PRUNED_SEGMENTS = new Set([
   "Crashpad",
@@ -81,7 +84,7 @@ export interface CopyStats {
 /** Copies a profile while collecting per-file failures instead of discarding the clone. */
 export async function copyProfile(source: string, destination: string): Promise<CopyStats> {
   await rm(destination, { recursive: true, force: true });
-  await mkdir(destination, { recursive: true });
+  await mkdir(destination, { recursive: true, mode: PRIVATE_DIR });
 
   const stats: CopyStats = { files: 0, bytes: 0, skipped: [] };
   const queue: string[] = [""];
@@ -99,7 +102,7 @@ export async function copyProfile(source: string, destination: string): Promise<
       continue;
     }
 
-    await mkdir(targetDir, { recursive: true });
+    await mkdir(targetDir, { recursive: true, mode: PRIVATE_DIR });
 
     for (const entry of entries) {
       const sourcePath = join(sourceDir, entry.name);
@@ -131,10 +134,10 @@ export async function copyProfile(source: string, destination: string): Promise<
   return stats;
 }
 
-/** Creates an empty user data directory that Brave will populate on first run. */
+/** Creates an empty user data directory that the browser populates on first run. */
 export async function createFreshProfile(destination: string): Promise<void> {
   await rm(destination, { recursive: true, force: true });
-  await mkdir(destination, { recursive: true });
+  await mkdir(destination, { recursive: true, mode: PRIVATE_DIR });
   await writeFile(join(destination, "First Run"), "", "utf8");
 }
 
@@ -177,7 +180,7 @@ export async function prepareTemplate(options: PrepareTemplateOptions): Promise<
   if (size > maxTemplateSizeGb * 1024 ** 3) {
     throw new Error(
       `Source profile is ${formatGb(size)}, above the ${maxTemplateSizeGb} GB limit. ` +
-        `Raise maxTemplateSizeGb in config.ts if this is expected.`,
+        `Raise profileSource.maxTemplateSizeGb in config.json if this is expected.`,
     );
   }
 
@@ -209,7 +212,7 @@ async function processAlive(pid: number): Promise<boolean> {
 /** Exclusively leases a profile across proxy processes and takes over dead owners. */
 export async function acquireProfileLock(profileDir: string): Promise<() => Promise<void>> {
   const lockPath = join(profileDir, LOCK_FILE);
-  await mkdir(profileDir, { recursive: true });
+  await mkdir(profileDir, { recursive: true, mode: PRIVATE_DIR });
   const contents: LockContents = { pid: process.pid, acquiredAt: new Date().toISOString() };
   let acquired = false;
 

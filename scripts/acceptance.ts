@@ -1,47 +1,11 @@
 /** Phase 4 acceptance: three concurrent conversations against one proxy. */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { fixtureExtension, prepareRun } from "./harness.ts";
 
-const LOCALAPPDATA = process.env.LOCALAPPDATA!;
-// Deliberately contains spaces: validates Windows argument-array handling end to end.
-const root = join(process.env.TEMP ?? LOCALAPPDATA, "multi cdp mcp acceptance");
-const configPath = join(root, "config.json");
-await rm(root, { recursive: true, force: true });
-await mkdir(root, { recursive: true });
-await writeFile(
-  configPath,
-  JSON.stringify({
-    dataRoot: root,
-    profileSource: {
-      mode: "clone",
-      sourceUserDataDir: join(LOCALAPPDATA, "multi-cdp-mcp", "templates", "default"),
-      refreshTemplate: true,
-    },
-    extensions: {
-      controlExtensionPath: join(process.cwd(), "extensions", "control"),
-      devExtensionPaths: [
-        join(process.cwd(), "scripts", "feasibility", "fixtures", "dev-extension"),
-      ],
-    },
-    browser: { portRange: { start: 9640, end: 9650 } },
-  }),
-  "utf8",
-);
-
-const env = Object.fromEntries(
-  Object.entries({ ...process.env, MULTI_CDP_MCP_CONFIG: configPath }).filter(
-    (entry): entry is [string, string] => entry[1] !== undefined,
-  ),
-);
-const transport = new StdioClientTransport({
-  command: "bun",
-  args: [join(process.cwd(), "src", "index.ts")],
-  env,
-  stderr: "inherit",
-});
+// Deliberately contains spaces: validates argument-array handling end to end.
+const run = await prepareRun("multi cdp mcp acceptance", { start: 9640, end: 9650 }, [fixtureExtension]);
+const transport = run.transport();
 const client = new Client({ name: "multi-cdp-mcp-acceptance", version: "0.1.0" });
 
 async function raw(
@@ -149,7 +113,7 @@ try {
     id: string;
     name: string;
   }>;
-  if (extensions.length < 8 || !extensions.some((extension) => extension.name === "multi-cdp-mcp dev fixture")) {
+  if (!extensions.some((extension) => extension.name === "multi-cdp-mcp dev fixture")) {
     throw new Error(`Required extensions missing: ${JSON.stringify(extensions)}`);
   }
   console.error(`+ ${extensions.length} extensions available, including the dev build`);

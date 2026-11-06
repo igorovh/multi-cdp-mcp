@@ -17,6 +17,12 @@ async function close(signal: string): Promise<void> {
 process.on("SIGINT", () => void close("SIGINT"));
 process.on("SIGTERM", () => void close("SIGTERM"));
 
+if (process.argv[2] === "install-skill") {
+  const { installSkill } = await import("./install-skill.ts");
+  console.log(`Installed the multi-cdp-browser skill to ${await installSkill()}`);
+  process.exit(0);
+}
+
 try {
   const config = await loadConfig();
   proxy = await ProxyServer.create(config);

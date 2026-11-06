@@ -1,10 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../config.ts";
+import { defaults } from "../config.ts";
 import { EnvironmentManager } from "./manager.ts";
 
-const root = join(process.env.TEMP ?? process.env.LOCALAPPDATA!, "multi-cdp-mcp-manager-tests", String(process.pid));
+const root = join(tmpdir(), "multi-cdp-mcp-manager-tests", String(process.pid));
 
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
@@ -26,7 +27,7 @@ async function managerWith(id: string): Promise<EnvironmentManager> {
     headless: true,
   };
   await writeFile(join(root, "environments.json"), JSON.stringify({ version: 1, environments: [record] }));
-  const config = { ...(await loadConfig()), dataRoot: root };
+  const config = { ...defaults(), dataRoot: root };
   return await EnvironmentManager.create(config);
 }
 

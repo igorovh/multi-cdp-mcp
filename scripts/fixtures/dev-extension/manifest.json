@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "multi-cdp-mcp dev fixture",
+  "version": "0.0.1",
+  "description": "Minimal unpacked extension used to verify --load-extension in a cloned profile.",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://example.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

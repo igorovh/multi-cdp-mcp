@@ -1,16 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   dedupePaths,
+  enableDeveloperMode,
   extensionIdFromKey,
   extensionIdFromPath,
   prepareUnpackedExtensions,
   unpackedSourceExtensions,
+  validateExtensionDirectory,
 } from "./extensions.ts";
 
-const root = join(process.env.TEMP ?? process.env.LOCALAPPDATA!, "multi-cdp-mcp-ext-tests", String(process.pid));
+const root = join(tmpdir(), "multi-cdp-mcp-ext-tests", String(process.pid));
 
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
@@ -28,9 +31,14 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 
 describe("extension IDs", () => {
   test("match Chromium for Windows unpacked paths, including drive-letter case", () => {
-    const expected = "bdldghfkmglbmlheppnailfjfklncfkh";
+    const expected = "cmocaegopgkcjbmolheeibcdbhbbgafk";
     expect(extensionIdFromPath(String.raw`E:\Projects\extension\dist`, "win32")).toBe(expected);
     expect(extensionIdFromPath(String.raw`e:\Projects\extension\dist`, "win32")).toBe(expected);
+  });
+
+  test("dedupes macOS paths case-insensitively and Linux paths exactly", () => {
+    expect(dedupePaths(["/a/B", "/a/b"], "darwin")).toEqual(["/a/B"]);
+    expect(dedupePaths(["/a/B", "/a/b"], "linux")).toEqual(["/a/B", "/a/b"]);
   });
 
   test("dedupes Windows paths case-insensitively", () => {
@@ -87,5 +95,33 @@ describe("profile extension materialisation", () => {
     expect(await unpackedSourceExtensions(root)).toEqual([
       { id: "bdldghfkmglbmlheppnailfjfklncfkh", name: "Example", version: "5.1.0", path: build },
     ]);
+  });
+});
+
+describe("extension directories", () => {
+  test("accepts an absolute directory with a manifest", async () => {
+    await writeJson(join(root, "ok", "manifest.json"), { name: "ok", version: "1" });
+    await validateExtensionDirectory(join(root, "ok"));
+  });
+
+  test("rejects relative paths, commas and missing manifests", async () => {
+    await expect(validateExtensionDirectory("relative/dir")).rejects.toThrow("absolute");
+    await expect(validateExtensionDirectory(join(root, "a,b"))).rejects.toThrow("comma");
+    await expect(validateExtensionDirectory(join(root, "missing"))).rejects.toThrow("manifest.json");
+  });
+});
+
+describe("developer mode", () => {
+  test("creates the preference in a fresh profile", async () => {
+    await enableDeveloperMode(root);
+    const preferences = JSON.parse(await readFile(join(root, "Default", "Preferences"), "utf8"));
+    expect(preferences.extensions.ui.developer_mode).toBe(true);
+  });
+
+  test("keeps existing preferences", async () => {
+    await writeJson(join(root, "Default", "Preferences"), { profile: { name: "x" }, extensions: { ui: { developer_mode: false } } });
+    await enableDeveloperMode(root);
+    const preferences = JSON.parse(await readFile(join(root, "Default", "Preferences"), "utf8"));
+    expect(preferences).toEqual({ profile: { name: "x" }, extensions: { ui: { developer_mode: true } } });
   });
 });

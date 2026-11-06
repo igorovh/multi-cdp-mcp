@@ -153,17 +153,6 @@ export class CdpClient {
     return result.result?.value as T;
   }
 
-  /** Returns cookie names only, never credential values. */
-  async cookieNames(domainSuffix: string): Promise<string[]> {
-    const { cookies } = await this.send<{ cookies: Array<{ name: string; domain: string }> }>(
-      "Storage.getCookies",
-    );
-    return cookies
-      .filter((cookie) => cookie.domain.replace(/^\./, "").endsWith(domainSuffix))
-      .map((cookie) => cookie.name)
-      .sort();
-  }
-
   close(): void {
     this.#closed = true;
     try {
@@ -171,15 +160,5 @@ export class CdpClient {
     } catch {
       // Already closing.
     }
-  }
-}
-
-/** Convenience for one-off checks that do not need a persistent connection. */
-export async function extensionWorkers(webSocketUrl: string): Promise<CdpTarget[]> {
-  const client = await CdpClient.connect(webSocketUrl);
-  try {
-    return await client.extensionWorkers();
-  } finally {
-    client.close();
   }
 }

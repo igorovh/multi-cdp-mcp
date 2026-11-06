@@ -1,52 +1,10 @@
-/** End-to-end test: real proxy -> two sessions -> two Brave profiles -> two backends. */
+/** End-to-end test: real proxy -> two sessions -> two browser profiles -> two backends. */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { fixtureExtension, prepareRun } from "./harness.ts";
 
-const LOCALAPPDATA = process.env.LOCALAPPDATA!;
-const root = join(process.env.TEMP ?? LOCALAPPDATA, "multi-cdp-mcp-smoke");
-const configPath = join(root, "config.json");
-const sourceTemplate = join(LOCALAPPDATA, "multi-cdp-mcp", "templates", "default");
-
-await rm(root, { recursive: true, force: true });
-await mkdir(root, { recursive: true });
-await writeFile(
-  configPath,
-  JSON.stringify(
-    {
-      dataRoot: root,
-      profileSource: {
-        mode: "clone",
-        sourceUserDataDir: sourceTemplate,
-        refreshTemplate: true,
-      },
-      extensions: {
-        controlExtensionPath: join(process.cwd(), "extensions", "control"),
-        devExtensionPaths: [
-          join(process.cwd(), "scripts", "feasibility", "fixtures", "dev-extension"),
-        ],
-      },
-      browser: { portRange: { start: 9600, end: 9610 } },
-    },
-    null,
-    2,
-  ),
-  "utf8",
-);
-
-const env = Object.fromEntries(
-  Object.entries({ ...process.env, MULTI_CDP_MCP_CONFIG: configPath }).filter(
-    (entry): entry is [string, string] => entry[1] !== undefined,
-  ),
-);
-const transport = new StdioClientTransport({
-  command: "bun",
-  args: [join(process.cwd(), "src", "index.ts")],
-  env,
-  stderr: "inherit",
-});
+const run = await prepareRun("multi-cdp-mcp-smoke", { start: 9600, end: 9610 }, [fixtureExtension]);
+const transport = run.transport();
 const client = new Client({ name: "multi-cdp-mcp-smoke", version: "0.1.0" });
 
 function meta(sessionID: string): { sessionID: string } {
@@ -151,8 +109,8 @@ try {
     arguments: { callerId: explicitCaller },
   })) as CallToolResult;
   if (freshExtensions.isError) throw new Error(`fresh extensions: ${resultText(freshExtensions)}`);
-  const freshList = JSON.parse(resultText(freshExtensions)) as Array<{ name: string }>;
-  if (freshList.some((extension) => extension.name === "Example extension")) {
+  const freshList = JSON.parse(resultText(freshExtensions)) as Array<{ name: string; source: string }>;
+  if (freshList.some((extension) => extension.source === "profile" || extension.source === "template-unpacked")) {
     throw new Error("A fresh profile unexpectedly inherited template extensions.");
   }
   await client.callTool({

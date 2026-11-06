@@ -100,7 +100,11 @@ export class PageTools {
       Math.max(1, Math.round(requested ?? this.config.limits.toolTimeoutMs - 20_000)),
       MAX_EVALUATE_TIMEOUT_MS,
     );
-    if (typeof args.function === "string") args.function = wrapWithTimeout(args.function, timeoutMs);
+    // A classic script ("script" format) or a sourcePath cannot be wrapped in a function.
+    const isFunction = args.format === undefined || args.format === "function";
+    if (typeof args.function === "string" && isFunction) {
+      args.function = wrapWithTimeout(args.function, timeoutMs);
+    }
 
     const started = Date.now();
     const result = await this.manager.callBackend(route, "evaluate_script", args, {

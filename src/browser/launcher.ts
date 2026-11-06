@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { openSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { log } from "../logging.ts";
+import { CdpClient } from "./cdp.ts";
 
 export interface LaunchOptions {
   executable: string;
@@ -16,24 +17,15 @@ export interface LaunchOptions {
   timeoutMs?: number;
 }
 
-export interface BraveProcess {
+export interface BrowserProcess {
+  /** 0 when the browser's PID could not be confirmed; it is then never force-killed. */
   pid: number;
   port: number;
   browserVersion: string;
   webSocketDebuggerUrl: string;
 }
 
-export async function countRunningBrave(): Promise<number> {
-  const proc = Bun.spawn(["tasklist", "/FI", "IMAGENAME eq brave.exe", "/NH"], {
-    stdout: "pipe",
-    stderr: "ignore",
-  });
-  const output = await new Response(proc.stdout).text();
-  await proc.exited;
-  return output.split("\n").filter((line) => line.toLowerCase().includes("brave.exe")).length;
-}
-
-function buildArgs(options: LaunchOptions): string[] {
+export function buildArgs(options: LaunchOptions): string[] {
   const args = [
     `--user-data-dir=${options.userDataDir}`,
     `--remote-debugging-port=${options.remoteDebuggingPort}`,
@@ -57,12 +49,6 @@ interface VersionInfo {
   webSocketDebuggerUrl?: string;
 }
 
-interface WindowsProcess {
-  ProcessId?: number;
-  ExecutablePath?: string | null;
-  CommandLine?: string | null;
-}
-
 async function probeEndpoint(port: number): Promise<VersionInfo | null> {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
@@ -75,21 +61,20 @@ async function probeEndpoint(port: number): Promise<VersionInfo | null> {
   }
 }
 
-export async function launchBrave(options: LaunchOptions): Promise<BraveProcess> {
+export async function launchBrowser(options: LaunchOptions): Promise<BrowserProcess> {
   if (await probeEndpoint(options.remoteDebuggingPort)) {
     throw new Error(
       `Port ${options.remoteDebuggingPort} already serves a CDP endpoint. ` +
-        `Another browser is using it; choose a different port in config.ts.`,
+        "Another browser is using it; change browser.portRange in config.json.",
     );
   }
 
   await mkdir(options.logDir, { recursive: true });
-  const logPath = join(options.logDir, `brave-${options.remoteDebuggingPort}.log`);
+  const logPath = join(options.logDir, `browser-${options.remoteDebuggingPort}.log`);
   const logFd = openSync(logPath, "a");
 
   // detached + unref, otherwise the browser dies with this process and cannot be
-  // inspected manually afterwards. Argument array, never a joined shell string:
-  // every path here contains spaces.
+  // inspected manually afterwards. Argument array, never a joined shell string.
   const proc = spawn(options.executable, buildArgs(options), {
     detached: true,
     stdio: ["ignore", logFd, logFd],
@@ -97,7 +82,7 @@ export async function launchBrave(options: LaunchOptions): Promise<BraveProcess>
   });
   proc.unref();
   const pid = proc.pid;
-  if (pid === undefined) throw new Error("Failed to spawn Brave: no pid returned.");
+  if (pid === undefined) throw new Error(`Failed to spawn ${options.executable}: no pid returned.`);
 
   const timeoutMs = options.timeoutMs ?? 30_000;
   const deadline = Date.now() + timeoutMs;
@@ -105,7 +90,7 @@ export async function launchBrave(options: LaunchOptions): Promise<BraveProcess>
     const info = await probeEndpoint(options.remoteDebuggingPort);
     if (info?.webSocketDebuggerUrl) {
       log.ok(
-        `Brave up on port ${options.remoteDebuggingPort} (pid ${pid}, ${info.Browser ?? "unknown build"})`,
+        `Browser up on port ${options.remoteDebuggingPort} (pid ${pid}, ${info.Browser ?? "unknown build"})`,
       );
       return {
         pid,
@@ -118,7 +103,7 @@ export async function launchBrave(options: LaunchOptions): Promise<BraveProcess>
   }
 
   throw new Error(
-    `Brave did not expose a CDP endpoint on port ${options.remoteDebuggingPort} within ` +
+    `The browser did not expose a CDP endpoint on port ${options.remoteDebuggingPort} within ` +
       `${Math.round(timeoutMs / 1000)}s. See ${logPath}.`,
   );
 }
@@ -127,69 +112,96 @@ export async function portInUse(port: number): Promise<boolean> {
   return (await probeEndpoint(port)) !== null;
 }
 
-/** Reconnects only after executable, profile, port and live CDP endpoint all match. */
-export async function reconnectBrave(options: {
-  executable: string;
-  userDataDir: string;
-  remoteDebuggingPort: number;
-}): Promise<BraveProcess | null> {
-  if (process.platform !== "win32" || options.remoteDebuggingPort <= 0) return null;
-  const imageName = basename(options.executable).replaceAll("'", "''");
-  const script =
-    `Get-CimInstance Win32_Process -Filter "Name = '${imageName}'" | ` +
-    "Select-Object ProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress";
-  const proc = Bun.spawn(["powershell", "-NoProfile", "-Command", script], {
-    stdout: "pipe",
-    stderr: "ignore",
-  });
-  const output = await new Response(proc.stdout).text();
-  if ((await proc.exited) !== 0 || output.trim() === "") return null;
+function samePath(a: string, b: string): boolean {
+  const left = resolve(a);
+  const right = resolve(b);
+  return process.platform === "win32" || process.platform === "darwin"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
 
-  let parsed: WindowsProcess | WindowsProcess[];
+/** Reads the profile directory from chrome://version and the PID from SystemInfo. */
+async function browserIdentity(
+  webSocketDebuggerUrl: string,
+): Promise<{ userDataDir: string; pid: number } | null> {
+  let client: CdpClient | null = null;
+  let targetId: string | null = null;
   try {
-    parsed = JSON.parse(output) as WindowsProcess | WindowsProcess[];
+    client = await CdpClient.connect(webSocketDebuggerUrl, 5_000);
+    ({ targetId } = await client.send<{ targetId: string }>("Target.createTarget", {
+      url: "chrome://version",
+      background: true,
+    }));
+    const sessionId = await client.attach(targetId);
+    let profilePath: string | null = null;
+    for (let attempt = 0; attempt < 20 && !profilePath; attempt++) {
+      profilePath = await client
+        .evaluate<string | null>(sessionId, "document.getElementById('profile_path')?.textContent ?? null")
+        .catch(() => null);
+      if (!profilePath) await Bun.sleep(100);
+    }
+    if (!profilePath) return null;
+    const { processInfo } = await client.send<{ processInfo: Array<{ type: string; id: number }> }>(
+      "SystemInfo.getProcessInfo",
+    );
+    return {
+      userDataDir: dirname(profilePath.trim()),
+      pid: processInfo.find((entry) => entry.type === "browser")?.id ?? 0,
+    };
   } catch {
     return null;
+  } finally {
+    if (client && targetId) await client.send("Target.closeTarget", { targetId }).catch(() => {});
+    client?.close();
   }
-  const expectedExe = options.executable.toLowerCase();
-  const expectedProfile = options.userDataDir.toLowerCase();
-  const expectedPort = `--remote-debugging-port=${options.remoteDebuggingPort}`;
-  const match = (Array.isArray(parsed) ? parsed : [parsed]).find((entry) => {
-    const executable = entry.ExecutablePath?.toLowerCase();
-    const command = entry.CommandLine?.toLowerCase();
-    return (
-      entry.ProcessId &&
-      executable === expectedExe &&
-      command?.includes(expectedProfile) &&
-      command.includes(expectedPort)
-    );
-  });
-  if (!match?.ProcessId) return null;
+}
 
+/** Reconnects only when the browser on the recorded port reports the expected profile. */
+export async function reconnectBrowser(options: {
+  userDataDir: string;
+  remoteDebuggingPort: number;
+}): Promise<BrowserProcess | null> {
+  if (options.remoteDebuggingPort <= 0) return null;
   const info = await probeEndpoint(options.remoteDebuggingPort);
-  if (!info?.webSocketDebuggerUrl) {
-    throw new Error(
-      `Found Brave pid ${match.ProcessId} for ${options.userDataDir}, but its saved CDP ` +
-        `endpoint on port ${options.remoteDebuggingPort} does not respond.`,
-    );
-  }
-  log.ok(`Reconnected to Brave on port ${options.remoteDebuggingPort} (pid ${match.ProcessId})`);
+  if (!info?.webSocketDebuggerUrl) return null;
+  const identity = await browserIdentity(info.webSocketDebuggerUrl);
+  if (!identity || !samePath(identity.userDataDir, options.userDataDir)) return null;
+
+  log.ok(
+    `Reconnected to the browser on port ${options.remoteDebuggingPort} (pid ${identity.pid || "unknown"})`,
+  );
   return {
-    pid: match.ProcessId,
+    pid: identity.pid,
     port: options.remoteDebuggingPort,
     browserVersion: info.Browser ?? "unknown",
     webSocketDebuggerUrl: info.webSocketDebuggerUrl,
   };
 }
 
-async function taskkill(pid: number, force: boolean): Promise<void> {
-  const args = ["/PID", String(pid), "/T"];
-  if (force) args.push("/F");
-  const proc = Bun.spawn(["taskkill", ...args], { stdout: "ignore", stderr: "ignore" });
-  await proc.exited;
+async function forceKill(pid: number): Promise<void> {
+  if (pid <= 0) return;
+  if (process.platform === "win32") {
+    const proc = Bun.spawn(["taskkill", "/PID", String(pid), "/T", "/F"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    await proc.exited;
+    return;
+  }
+  // Launched detached, so the browser leads its own process group.
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
 }
 
 function pidAlive(pid: number): boolean {
+  if (pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -198,7 +210,7 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** Asks the browser to shut down over CDP. taskkill only closes windows, not the browser process. */
+/** Asks the browser to shut down over CDP so the profile is flushed to disk. */
 async function requestBrowserClose(webSocketDebuggerUrl: string): Promise<void> {
   await new Promise<void>((resolve) => {
     let socket: WebSocket;
@@ -231,24 +243,24 @@ async function requestBrowserClose(webSocketDebuggerUrl: string): Promise<void> 
   });
 }
 
-/** Closes the browser, preferring a graceful shutdown so the profile is flushed to disk. */
-export async function stopBrave(target: BraveProcess): Promise<void> {
+/** Closes the browser, preferring a graceful shutdown; force-kills only a confirmed PID. */
+export async function stopBrowser(target: BrowserProcess): Promise<void> {
   await requestBrowserClose(target.webSocketDebuggerUrl);
 
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     if (!(await probeEndpoint(target.port)) && !pidAlive(target.pid)) {
-      log.ok(`Brave on port ${target.port} stopped`);
+      log.ok(`Browser on port ${target.port} stopped`);
       return;
     }
     await Bun.sleep(500);
   }
 
-  log.warn(`Brave pid ${target.pid} did not exit cleanly; forcing.`);
-  await taskkill(target.pid, true);
+  if (target.pid <= 0) {
+    log.warn(`Browser on port ${target.port} did not exit and its PID is unknown; leaving it running.`);
+    return;
+  }
+  log.warn(`Browser pid ${target.pid} did not exit cleanly; forcing.`);
+  await forceKill(target.pid);
   await Bun.sleep(1_000);
-}
-
-export async function isEndpointAlive(port: number): Promise<boolean> {
-  return (await probeEndpoint(port)) !== null;
 }

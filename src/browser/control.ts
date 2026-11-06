@@ -22,6 +22,48 @@ export interface ManagementResult {
 
 const PROBE_TIMEOUT_MS = 3_000;
 
+/**
+ * Turns developer mode on from the browser's extensions page and re-enables the given
+ * unpacked extensions, which Edge disables after some restarts. Returns how many it enabled.
+ */
+export async function repairUnpackedExtensions(
+  client: CdpClient,
+  scheme: "chrome" | "edge",
+  extensionIds: string[],
+): Promise<number> {
+  const { targetId } = await client.send<{ targetId: string }>("Target.createTarget", {
+    url: `${scheme}://extensions`,
+    background: true,
+  });
+  try {
+    const sessionId = await client.attach(targetId);
+    const deadline = Date.now() + 5_000;
+    const ready = () =>
+      client
+        .evaluate<boolean>(sessionId, "typeof chrome === 'object' && typeof chrome.developerPrivate === 'object'")
+        .catch(() => false);
+    while (!(await ready())) {
+      if (Date.now() > deadline) throw new Error(`${scheme}://extensions exposes no developerPrivate API`);
+      await Bun.sleep(200);
+    }
+    return await client.evaluate<number>(
+      sessionId,
+      `(async (ids) => {
+  await chrome.developerPrivate.updateProfileConfiguration({ inDeveloperMode: true });
+  let enabled = 0;
+  for (const item of await chrome.management.getAll()) {
+    if (item.enabled || !ids.includes(item.id)) continue;
+    try { await chrome.management.setEnabled(item.id, true); enabled += 1; } catch {}
+  }
+  return enabled;
+})(${JSON.stringify(extensionIds)})`,
+      { timeoutMs: 10_000 },
+    );
+  } finally {
+    await client.send("Target.closeTarget", { targetId }).catch(() => {});
+  }
+}
+
 /** Adds enable/disable through chrome.management, which the CDP domain lacks. */
 export class ExtensionControl {
   private constructor(

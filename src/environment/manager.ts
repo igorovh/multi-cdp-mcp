@@ -4,15 +4,16 @@ import { join, relative, resolve } from "node:path";
 import { BackendAdapter } from "../backend/adapter.ts";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { ManagedExtension, ManagementResult } from "../browser/control.ts";
-import {
-  launchBrave,
-  portInUse,
-  reconnectBrave,
-  stopBrave,
-  type BraveProcess,
-} from "../browser/brave.ts";
 import { CdpClient } from "../browser/cdp.ts";
-import { ExtensionControl } from "../browser/control.ts";
+import { ExtensionControl, repairUnpackedExtensions } from "../browser/control.ts";
+import { resolveBrowser, type DetectedBrowser } from "../browser/detect.ts";
+import {
+  launchBrowser,
+  portInUse,
+  reconnectBrowser,
+  stopBrowser,
+  type BrowserProcess,
+} from "../browser/launcher.ts";
 import { PageInput } from "../browser/input.ts";
 import {
   environmentsDir,
@@ -23,10 +24,12 @@ import {
 import { errorMessage, log } from "../logging.ts";
 import {
   dedupePaths,
+  enableDeveloperMode,
   extensionIdFromPath,
   manifestName,
   prepareUnpackedExtensions,
   unpackedSourceExtensions,
+  validateExtensionDirectory,
 } from "../profile/extensions.ts";
 import {
   acquireProfileLock,
@@ -48,6 +51,7 @@ export interface EnvironmentView
     | "devExtensionPaths"
     | "browserPid"
     | "templateUnpackedPaths"
+    | "disabledExtensionIds"
   > {
   state: EnvironmentState;
   ownedByCaller: boolean;
@@ -69,7 +73,7 @@ export interface ListedExtension extends ManagedExtension {
 }
 
 interface RunningParts {
-  brave: BraveProcess;
+  browser: BrowserProcess;
   backend: BackendAdapter;
   cdp: CdpClient;
   control: ExtensionControl | null;
@@ -120,6 +124,7 @@ export class EnvironmentManager {
   #startups = new Map<string, Promise<Environment>>();
   #creations = new Map<string, Promise<Environment>>();
   #templateReady: Promise<string> | null = null;
+  #browser: DetectedBrowser | null = null;
   #reservedPorts = new Set<number>();
 
   private constructor(
@@ -138,16 +143,46 @@ export class EnvironmentManager {
     return manager;
   }
 
+  /** Resolved on first launch, so the proxy starts and lists tools even without a browser. */
+  #detectBrowser(): DetectedBrowser {
+    if (!this.#browser) {
+      this.#browser = resolveBrowser(this.config.browser.executable);
+      log.info(`Using ${this.#browser.kind} browser at ${this.#browser.executable}`);
+    }
+    return this.#browser;
+  }
+
+  #sourceUserDataDir(): string {
+    const configured = this.config.profileSource.sourceUserDataDir;
+    if (configured !== "auto") return configured;
+    const detected = this.#detectBrowser().userDataDir;
+    if (!detected) {
+      throw new Error(
+        "Cannot infer the profile to clone for this browser; set profileSource.sourceUserDataDir.",
+      );
+    }
+    return detected;
+  }
+
   /** Template preparation is shared and must happen at most once per proxy run. */
   #ensureTemplate(): Promise<string> {
-    this.#templateReady ??= prepareTemplate({
-      mode: this.config.profileSource.mode,
-      sourceUserDataDir: this.config.profileSource.sourceUserDataDir,
-      templateDir: templateDir(this.config),
-      maxTemplateSizeGb: this.config.profileSource.maxTemplateSizeGb,
-      refresh: this.config.profileSource.refreshTemplate,
+    if (this.#templateReady) return this.#templateReady;
+    const ready = Promise.resolve().then(() =>
+      prepareTemplate({
+        mode: this.config.profileSource.mode,
+        sourceUserDataDir:
+          this.config.profileSource.mode === "clone" ? this.#sourceUserDataDir() : "",
+        templateDir: templateDir(this.config),
+        maxTemplateSizeGb: this.config.profileSource.maxTemplateSizeGb,
+        refresh: this.config.profileSource.refreshTemplate,
+      }),
+    );
+    // A failed preparation (for example a missing source profile) may be retried.
+    ready.catch(() => {
+      if (this.#templateReady === ready) this.#templateReady = null;
     });
-    return this.#templateReady;
+    this.#templateReady = ready;
+    return ready;
   }
 
   async #allocatePort(): Promise<number> {
@@ -178,6 +213,7 @@ export class EnvironmentManager {
       ownerSessionId,
       extensionPaths: _extensionPaths,
       templateUnpackedPaths: _templateUnpackedPaths,
+      disabledExtensionIds: _disabledExtensionIds,
       browserPid: _browserPid,
       ...record
     } = environment.record;
@@ -239,6 +275,7 @@ export class EnvironmentManager {
       );
     }
     if (this.#environments.has(id)) throw new Error(`Environment "${id}" already exists.`);
+    for (const path of options.devExtensionPaths ?? []) await validateExtensionDirectory(path);
 
     const profileDir = join(environmentsDir(this.config), id);
     const record: EnvironmentRecord = {
@@ -322,13 +359,31 @@ export class EnvironmentManager {
       if (!options.explicit) throw this.#ownershipError(id, owner, sessionId, "stop");
       log.warn(`Environment ${id} owned by ${owner} stopped explicitly by ${sessionId}`);
     }
-    if (environment.activeCalls > 0) {
-      throw new Error(`Environment "${id}" has ${environment.activeCalls} call(s) in flight.`);
+    if (environment.activeCalls > 0 || environment.state === "starting") {
+      throw new Error(`Environment "${id}" is busy; try again once it is idle.`);
     }
-    if (!environment.running && environment.record.browserPid) {
-      await this.#ensureRunning(environment);
+    if (environment.running) await this.#shutdown(environment);
+    else await this.#stopOrphan(environment);
+  }
+
+  /** Stops a browser left running by a crashed proxy without launching a new one. */
+  async #stopOrphan(environment: Environment): Promise<void> {
+    const record = environment.record;
+    if (!record.browserPid && record.port <= 0) return;
+    const releaseLock = await acquireProfileLock(record.profileDir);
+    try {
+      const browser = await reconnectBrowser({
+        userDataDir: record.profileDir,
+        remoteDebuggingPort: record.port,
+      });
+      if (browser) await stopBrowser(browser);
+    } finally {
+      await releaseLock();
     }
-    await this.#shutdown(environment);
+    record.browserPid = undefined;
+    record.browserVersion = undefined;
+    record.port = 0;
+    await this.registry.upsert(record);
   }
 
   async delete(id: string, sessionId: string, force = false): Promise<void> {
@@ -367,8 +422,8 @@ export class EnvironmentManager {
   }
 
   async #shutdownForDelete(environment: Environment): Promise<void> {
-    if (!environment.running && environment.record.browserPid) await this.#ensureRunning(environment);
-    await this.#shutdown(environment);
+    if (environment.running) await this.#shutdown(environment);
+    else await this.#stopOrphan(environment);
   }
 
   async #deleteStopped(environment: Environment): Promise<void> {
@@ -399,15 +454,15 @@ export class EnvironmentManager {
     try {
       await parts.backend.close();
       parts.cdp.close();
-      await stopBrave(parts.brave);
+      await stopBrowser(parts.browser);
     } finally {
       await parts.releaseLock();
+      environment.record.browserPid = undefined;
+      environment.record.browserVersion = undefined;
+      environment.record.port = 0;
+      this.#reservedPorts.delete(parts.browser.port);
+      await this.registry.upsert(environment.record);
     }
-    environment.record.browserPid = undefined;
-    environment.record.browserVersion = undefined;
-    environment.record.port = 0;
-    this.#reservedPorts.delete(parts.brave.port);
-    await this.registry.upsert(environment.record);
     log.info(`Stopped environment ${environment.id}`);
   }
 
@@ -451,21 +506,22 @@ export class EnvironmentManager {
         await this.registry.upsert(environment.record);
       }
 
+      const detected = this.#detectBrowser();
       const releaseLock = await acquireProfileLock(environment.record.profileDir);
-      let brave: BraveProcess | null = null;
+      let browser: BrowserProcess | null = null;
       let cdp: CdpClient | null = null;
       let backend: BackendAdapter | null = null;
       try {
-        brave = await reconnectBrave({
-          executable: this.config.braveExecutable,
+        browser = await reconnectBrowser({
           userDataDir: environment.record.profileDir,
           remoteDebuggingPort: environment.record.port,
         });
 
-        const extensionPaths = brave ? [] : await this.#extensionPaths(environment);
+        const extensionPaths = browser ? [] : await this.#extensionPaths(environment, detected);
+        if (extensionPaths.length > 0) await enableDeveloperMode(environment.record.profileDir);
 
-        const port = brave?.port ?? (await this.#allocatePort());
-        if (brave) {
+        const port = browser?.port ?? (await this.#allocatePort());
+        if (browser) {
           if (this.#reservedPorts.has(port)) {
             throw new Error(`Recovered port ${port} is already reserved by another environment.`);
           }
@@ -473,8 +529,8 @@ export class EnvironmentManager {
         }
         environment.record.port = port;
 
-        brave ??= await launchBrave({
-          executable: this.config.braveExecutable,
+        browser ??= await launchBrowser({
+          executable: detected.executable,
           userDataDir: environment.record.profileDir,
           remoteDebuggingPort: port,
           logDir: logsDir(this.config),
@@ -484,7 +540,7 @@ export class EnvironmentManager {
           extensionPaths,
         });
 
-        cdp = await CdpClient.connect(brave.webSocketDebuggerUrl);
+        cdp = await CdpClient.connect(browser.webSocketDebuggerUrl);
         backend = await BackendAdapter.start(this.config, {
           environmentId: environment.id,
           browserUrl: `http://127.0.0.1:${port}`,
@@ -498,14 +554,18 @@ export class EnvironmentManager {
         });
 
         // Optional: without it, enable/disable is unavailable but everything else works.
-        const control = await this.#attachControl(environment, cdp, 10_000);
+        let control = await this.#attachControl(environment, cdp, 10_000);
+        const repairable = extensionPaths.length > 0 && detected.kind !== "chrome";
+        if (repairable && (await this.#needsRepair(environment, control))) {
+          control = await this.#repair(environment, detected, cdp, control);
+        }
 
-        environment.running = { brave, backend, cdp, control, input: new PageInput(cdp), releaseLock };
+        environment.running = { browser, backend, cdp, control, input: new PageInput(cdp), releaseLock };
         environment.state = "running";
         environment.lastError = null;
         environment.record.lastUsedAt = new Date().toISOString();
-        environment.record.browserPid = brave.pid;
-        environment.record.browserVersion = brave.browserVersion;
+        environment.record.browserPid = browser.pid;
+        environment.record.browserVersion = browser.browserVersion;
         await this.registry.upsert(environment.record);
         log.ok(`Environment ${environment.id} running on port ${port}`);
         return environment;
@@ -513,7 +573,7 @@ export class EnvironmentManager {
         if (environment.record.port > 0) this.#reservedPorts.delete(environment.record.port);
         await backend?.close().catch(() => {});
         cdp?.close();
-        if (brave) await stopBrave(brave).catch(() => {});
+        if (browser) await stopBrowser(browser).catch(() => {});
         await releaseLock();
         throw error;
       }
@@ -528,9 +588,17 @@ export class EnvironmentManager {
    * Template "load unpacked" builds are reloaded via --load-extension so they stay
    * controllable; a dev build with the same manifest name replaces them.
    */
-  async #extensionPaths(environment: Environment): Promise<string[]> {
+  async #extensionPaths(environment: Environment, detected: DetectedBrowser): Promise<string[]> {
     const record = environment.record;
-    const devPaths = [...this.config.extensions.devExtensionPaths, ...record.devExtensionPaths];
+    const devPaths: string[] = [];
+    for (const path of [...this.config.extensions.devExtensionPaths, ...record.devExtensionPaths]) {
+      try {
+        await validateExtensionDirectory(path);
+        devPaths.push(path);
+      } catch (error) {
+        log.warn(`Skipping dev extension in ${record.id}: ${errorMessage(error)}`);
+      }
+    }
 
     if (this.config.extensions.materializeProfileExtensions) {
       const unpacked = await prepareUnpackedExtensions(record.profileDir);
@@ -566,6 +634,12 @@ export class EnvironmentManager {
         `control extension missing at ${this.config.extensions.controlExtensionPath} ` +
         "(check extensions.controlExtensionPath in config.json)";
     }
+    if (detected.kind === "chrome") {
+      environment.controlError =
+        "Google Chrome 137+ ignores --load-extension, so extension control and dev builds are " +
+        "unavailable; set browser.executable to Chromium, Brave or Edge";
+      log.warn(`${record.id}: ${environment.controlError}`);
+    }
 
     await this.registry.upsert(record);
     return dedupePaths([
@@ -574,6 +648,54 @@ export class EnvironmentManager {
       ...record.extensionPaths,
       ...templateUnpacked,
     ]);
+  }
+
+  /** IDs loaded from the command line that should be enabled after startup. */
+  #expectedEnabledIds(environment: Environment): Set<string> {
+    const record = environment.record;
+    const ids = new Set(
+      [
+        this.config.extensions.controlExtensionPath,
+        ...this.config.extensions.devExtensionPaths,
+        ...record.devExtensionPaths,
+        ...(record.templateUnpackedPaths ?? []),
+      ].map((path) => extensionIdFromPath(path)),
+    );
+    for (const path of record.extensionPaths) {
+      const id = path.split(/[\\/]/).at(-2);
+      if (id) ids.add(id);
+    }
+    for (const id of record.disabledExtensionIds ?? []) ids.delete(id);
+    return ids;
+  }
+
+  async #needsRepair(environment: Environment, control: ExtensionControl | null): Promise<boolean> {
+    if (!control) return true;
+    try {
+      const expected = this.#expectedEnabledIds(environment);
+      return (await control.list()).some((extension) => expected.has(extension.id) && !extension.enabled);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Edge can come up with developer mode off and every unpacked extension disabled. */
+  async #repair(
+    environment: Environment,
+    detected: DetectedBrowser,
+    cdp: CdpClient,
+    control: ExtensionControl | null,
+  ): Promise<ExtensionControl | null> {
+    try {
+      const scheme = detected.kind === "edge" ? "edge" : "chrome";
+      const ids = [...this.#expectedEnabledIds(environment)];
+      const enabled = await repairUnpackedExtensions(cdp, scheme, ids);
+      log.info(`Re-enabled ${enabled} unpacked extension(s) in ${environment.id}`);
+    } catch (error) {
+      log.warn(`Could not repair extensions in ${environment.id}: ${errorMessage(error)}`);
+      return control;
+    }
+    return control ?? (await this.#attachControl(environment, cdp, 5_000));
   }
 
   async #attachControl(
@@ -602,11 +724,14 @@ export class EnvironmentManager {
     if (running.control && (await running.control.alive())) return running.control;
     running.control = await this.#attachControl(environment, running.cdp, 3_000);
     if (running.control) return running.control;
+    if (this.#browser?.kind === "chrome") {
+      throw new Error(`Extension control is unavailable in ${environment.id}: ${environment.controlError}.`);
+    }
     throw new Error(
       `Extension control is unavailable in ${environment.id}: ${environment.controlError}. ` +
         "Enable/disable/reload need the bundled control extension, which the proxy loads " +
-        "with --load-extension when it launches Brave. Recover with cdp_environment_stop " +
-        "and retry (the next call relaunches Brave), or create a new environment. " +
+        "with --load-extension when it launches the browser. Recover with cdp_environment_stop " +
+        "and retry (the next call relaunches the browser), or create a new environment. " +
         "Downstream tools such as install_extension and list_extensions do not need it.",
     );
   }
@@ -695,7 +820,15 @@ export class EnvironmentManager {
       if (extensionId === control.extensionId) {
         throw new Error("The control extension cannot disable itself.");
       }
-      return withHint(await control.setEnabled(extensionId, enabled));
+      const result = withHint(await control.setEnabled(extensionId, enabled));
+      if (result.ok) {
+        const disabled = new Set(environment.record.disabledExtensionIds ?? []);
+        if (enabled) disabled.delete(extensionId);
+        else disabled.add(extensionId);
+        environment.record.disabledExtensionIds = [...disabled];
+        await this.registry.upsert(environment.record);
+      }
+      return result;
     });
   }
 

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { log } from "../logging.ts";
 
 export interface ProfileExtension {
@@ -175,12 +175,48 @@ export async function unpackedSourceExtensions(profileRoot: string): Promise<Pro
   return result;
 }
 
-/** Order-preserving de-duplication; Windows paths compare case-insensitively. */
+/** Rejects paths that --load-extension would misparse or that are not unpacked extensions. */
+export async function validateExtensionDirectory(path: string): Promise<void> {
+  if (!isAbsolute(path)) throw new Error(`Extension path must be absolute: ${path}`);
+  // --load-extension takes one comma-separated list.
+  if (path.includes(",")) throw new Error(`Extension path must not contain a comma: ${path}`);
+  try {
+    if ((await stat(join(path, "manifest.json"))).isFile()) return;
+  } catch {
+    // Reported below.
+  }
+  throw new Error(`No manifest.json in extension directory: ${path}`);
+}
+
+/**
+ * Chromium 134+ disables command-line extensions on restart while developer mode is off;
+ * Edge does so after some restarts too. The preference must be set before launch.
+ */
+export async function enableDeveloperMode(profileRoot: string): Promise<void> {
+  const path = join(profileRoot, "Default", "Preferences");
+  let preferences: Record<string, unknown> = {};
+  try {
+    preferences = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      log.warn(`Cannot read ${path}; leaving developer mode unchanged: ${(error as Error).message}`);
+      return;
+    }
+  }
+  const extensions = (preferences.extensions ??= {}) as Record<string, unknown>;
+  const ui = (extensions.ui ??= {}) as Record<string, unknown>;
+  if (ui.developer_mode === true) return;
+  ui.developer_mode = true;
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(preferences), "utf8");
+}
+
+/** Order-preserving de-duplication; Windows and macOS paths compare case-insensitively. */
 export function dedupePaths(paths: string[], platform = process.platform): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
   for (const path of paths) {
-    const key = platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+    const key = platform === "win32" || platform === "darwin" ? resolve(path).toLowerCase() : resolve(path);
     if (seen.has(key)) continue;
     seen.add(key);
     result.push(path);

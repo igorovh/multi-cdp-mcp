@@ -1,13 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireProfileLock } from "./manager.ts";
 
-const root = join(
-  process.env.TEMP ?? process.env.LOCALAPPDATA!,
-  "multi-cdp-mcp-unit-tests",
-  String(process.pid),
-);
+const root = join(tmpdir(), "multi-cdp-mcp-unit-tests", String(process.pid));
 
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });

@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ProxyConfig } from "../config.ts";
 import { log } from "../logging.ts";
+import { PRIVATE_DIR } from "../profile/manager.ts";
 
 export interface EnvironmentRecord {
   id: string;
@@ -19,6 +20,8 @@ export interface EnvironmentRecord {
   /** "Load unpacked" builds inherited from the template; resolved once per environment. */
   templateUnpackedPaths?: string[];
   headless: boolean;
+  /** Extensions the caller disabled on purpose; startup repair leaves them disabled. */
+  disabledExtensionIds?: string[];
   /** Hints for crash recovery only; live process identity is always verified. */
   browserPid?: number;
   browserVersion?: string;
@@ -77,7 +80,7 @@ export class EnvironmentRegistry {
   #flush(): Promise<void> {
     this.#writing = this.#writing.then(async () => {
       const contents: RegistryFile = { version: 1, environments: this.all() };
-      await mkdir(dirname(this.path), { recursive: true });
+      await mkdir(dirname(this.path), { recursive: true, mode: PRIVATE_DIR });
       const temporary = `${this.path}.tmp`;
       await writeFile(temporary, JSON.stringify(contents, null, 2), "utf8");
       await rename(temporary, this.path);

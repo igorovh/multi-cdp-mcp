@@ -4,7 +4,7 @@ const stringProperty = (description: string): object => ({ type: "string", descr
 
 const CALLER_ID = {
   type: "string",
-  description: "Session ID when _meta.sessionID is absent.",
+  description: "Session ID when the request carries none in _meta.",
 };
 const ENVIRONMENT_ID = {
   type: "string",
@@ -14,7 +14,7 @@ const ENVIRONMENT_ID = {
 export const managementTools: Tool[] = [
   {
     name: "cdp_environment_create",
-    description: "Create, start and bind a persistent Brave environment.",
+    description: "Create, start and bind a persistent browser environment.",
     inputSchema: {
       type: "object",
       properties: {

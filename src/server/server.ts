@@ -12,12 +12,13 @@ import { EnvironmentManager, type Route } from "../environment/manager.ts";
 import { errorMessage, log } from "../logging.ts";
 import { type CallerIdentity, missingIdentityMessage, resolveIdentity } from "./identity.ts";
 import { PageTools } from "./page-tools.ts";
+import { VERSION } from "../version.ts";
 import { exposeDownstreamTools, MANAGEMENT_TOOL_NAMES, managementTools } from "./tools.ts";
 
 type Args = Record<string, unknown>;
 
-export const SERVER_INSTRUCTIONS = `Persistent, isolated Brave environments plus chrome-devtools tools.
-Identity: calls route by _meta.sessionID. If a call fails with "No caller identity", pass callerId: "<your session ID>" on every call (same value each time), or environmentId to address an environment directly.
+export const SERVER_INSTRUCTIONS = `Persistent, isolated Chromium browser environments plus chrome-devtools tools.
+Identity: calls route by the session ID in _meta. If a call fails with "No caller identity", pass callerId: "<your session ID>" on every call (same value each time), or environmentId to address an environment directly.
 Environment: cdp_environment_create({name, headless?, fresh?, devExtensionPaths?}), cdp_environment_list(), cdp_environment_select({environmentId}), cdp_environment_stop({environmentId?}), cdp_environment_release().
 Extensions: cdp_extension_list() (check controllable), cdp_extension_set_enabled({extensionId, enabled}), cdp_extension_reload({extensionId}), install_extension({path}).
 Pages: list_pages(), select_page({pageId, bringToFront?}), new_page({url}), navigate_page({pageId, url, timeout?}), take_snapshot({pageId}), take_screenshot({pageId}).
@@ -87,7 +88,7 @@ export class ProxyServer {
   ) {
     this.#pageTools = new PageTools(manager, config);
     this.server = new Server(
-      { name: "multi-cdp-mcp", version: "0.1.0" },
+      { name: "multi-cdp-mcp", version: VERSION },
       { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
     );
     this.#registerHandlers();

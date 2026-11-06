@@ -12,6 +12,12 @@ describe("caller identity", () => {
     ).toEqual({ id: "ses_meta", source: "meta" });
   });
 
+  test("reads the key OpenCode 2.2 sends", () => {
+    expect(
+      resolveIdentity({ meta: { "ai.opencode/sessionID": "ses_oc" }, args: { callerId: "ses_arg" } }),
+    ).toEqual({ id: "ses_oc", source: "meta" });
+  });
+
   test("falls back to callerId, then transport, then the explicit environment", () => {
     expect(resolveIdentity({ args: { callerId: "ses_a", environmentId: "env" } })).toEqual({
       id: "ses_a",
