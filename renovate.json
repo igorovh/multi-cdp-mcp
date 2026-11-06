@@ -23,6 +23,11 @@
       "automerge": true
     },
     {
+      "description": "engines is a promise to users, not a lock; keep it a range.",
+      "matchDepTypes": ["engines"],
+      "rangeStrategy": "auto"
+    },
+    {
       "matchManagers": ["github-actions"],
       "groupName": "GitHub Actions"
     },
