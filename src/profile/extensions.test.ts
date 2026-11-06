@@ -31,9 +31,9 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 
 describe("extension IDs", () => {
   test("match Chromium for Windows unpacked paths, including drive-letter case", () => {
-    const expected = "cmocaegopgkcjbmolheeibcdbhbbgafk";
-    expect(extensionIdFromPath(String.raw`E:\Projects\extension\dist`, "win32")).toBe(expected);
-    expect(extensionIdFromPath(String.raw`e:\Projects\extension\dist`, "win32")).toBe(expected);
+    const expected = "nbepmnkijpbnfmgakanjfcpbjebdphmf";
+    expect(extensionIdFromPath(String.raw`C:\projects\acme-extension\dist`, "win32")).toBe(expected);
+    expect(extensionIdFromPath(String.raw`c:\projects\acme-extension\dist`, "win32")).toBe(expected);
   });
 
   test("dedupes macOS paths case-insensitively and Linux paths exactly", () => {
@@ -42,9 +42,9 @@ describe("extension IDs", () => {
   });
 
   test("dedupes Windows paths case-insensitively", () => {
-    expect(dedupePaths([String.raw`E:\a\b`, String.raw`e:\A\b`, String.raw`E:\c`], "win32")).toEqual([
-      String.raw`E:\a\b`,
-      String.raw`E:\c`,
+    expect(dedupePaths([String.raw`C:\a\b`, String.raw`c:\A\b`, String.raw`C:\c`], "win32")).toEqual([
+      String.raw`C:\a\b`,
+      String.raw`C:\c`,
     ]);
   });
 });
@@ -54,11 +54,11 @@ describe("profile extension materialisation", () => {
     const key = publicKey();
     const id = extensionIdFromKey(key);
     const directory = join(root, "Default", "Extensions", id, "1.0.0_0");
-    await writeJson(join(directory, "manifest.json"), { name: "7TV", version: "1.0.0" });
+    await writeJson(join(directory, "manifest.json"), { name: "Example Store Extension", version: "1.0.0" });
     const preferences = join(root, "Default", "Secure Preferences");
     await writeJson(preferences, {
       extensions: {
-        settings: { [id]: { path: join(id, "1.0.0_0"), manifest: { name: "7TV", version: "1.0.0", key } } },
+        settings: { [id]: { path: join(id, "1.0.0_0"), manifest: { name: "Example Store Extension", version: "1.0.0", key } } },
       },
     });
 
@@ -86,14 +86,14 @@ describe("profile extension materialisation", () => {
     await writeJson(join(root, "Default", "Secure Preferences"), {
       extensions: {
         settings: {
-          bdldghfkmglbmlheppnailfjfklncfkh: { location: 4, path: build },
+          abcdefghijklmnopabcdefghijklmnop: { location: 4, path: build },
           mhjfbmdgcfjbbpaeojofohoefgiehjai: { location: 5, path: join(root, "component") },
           missing: { location: 4, path: join(root, "gone") },
         },
       },
     });
     expect(await unpackedSourceExtensions(root)).toEqual([
-      { id: "bdldghfkmglbmlheppnailfjfklncfkh", name: "Example", version: "5.1.0", path: build },
+      { id: "abcdefghijklmnopabcdefghijklmnop", name: "Example", version: "5.1.0", path: build },
     ]);
   });
 });
