@@ -43,6 +43,8 @@ export interface ProxyConfig {
     /** `"auto"` or the path to a Chromium-based browser binary. */
     executable: string;
     headless: boolean;
+    /** Keep browser sync and Edge's implicit sign-in to the OS account; off by default. */
+    allowSync: boolean;
     extraArgs: string[];
     /** Ports are taken from this inclusive range, one per running environment. */
     portRange: { start: number; end: number };
@@ -104,6 +106,7 @@ export function defaults(): ProxyConfig {
     browser: {
       executable: "auto",
       headless: true,
+      allowSync: false,
       extraArgs: [],
       portRange: { start: 9400, end: 9499 },
     },

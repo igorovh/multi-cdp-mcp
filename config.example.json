@@ -2,6 +2,7 @@
   "browser": {
     "executable": "auto",
     "headless": true,
+    "allowSync": false,
     "extraArgs": [],
     "portRange": { "start": 9400, "end": 9499 }
   },

@@ -15,6 +15,9 @@ export interface LaunchOptions {
   headless?: boolean;
   extraArgs?: string[];
   timeoutMs?: number;
+  /** Adds --disable-sync, and on Edge blocks implicit sign-in to the OS account. */
+  disableSync?: boolean;
+  kind?: string;
 }
 
 export interface BrowserProcess {
@@ -39,7 +42,18 @@ export function buildArgs(options: LaunchOptions): string[] {
     args.push(`--load-extension=${options.extensionPaths.join(",")}`);
   }
   if (options.headless) args.push("--headless=new");
-  args.push(...(options.extraArgs ?? []));
+
+  // Chromium honours only the last --disable-features, so user features are merged in.
+  const features: string[] = [];
+  if (options.disableSync) {
+    args.push("--disable-sync");
+    if (options.kind === "edge") features.push("msImplicitSignin");
+  }
+  for (const arg of options.extraArgs ?? []) {
+    if (arg.startsWith("--disable-features=")) features.push(...arg.slice(19).split(",").filter(Boolean));
+    else args.push(arg);
+  }
+  if (features.length > 0) args.push(`--disable-features=${[...new Set(features)].join(",")}`);
   args.push("about:blank");
   return args;
 }

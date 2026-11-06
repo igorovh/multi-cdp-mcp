@@ -536,6 +536,8 @@ export class EnvironmentManager {
           logDir: logsDir(this.config),
           headless: environment.record.headless,
           extraArgs: this.config.browser.extraArgs,
+          disableSync: !this.config.browser.allowSync,
+          kind: detected.kind,
           timeoutMs: this.config.limits.startupTimeoutMs,
           extensionPaths,
         });

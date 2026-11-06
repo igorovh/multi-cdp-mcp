@@ -19,6 +19,7 @@ keys, wrong types or invalid JSON stop the server with an error naming the field
   "browser": {
     "executable": "auto",
     "headless": true,
+    "allowSync": false,
     "extraArgs": [],
     "portRange": { "start": 9400, "end": 9499 }
   }
@@ -39,7 +40,11 @@ keys, wrong types or invalid JSON stop the server with an error naming the field
   `--load-extension`: extension control and dev builds need another browser.
 - `headless`: default for new environments. Agents override it with
   `cdp_environment_create({ headless: false })`; the choice is stored with the profile.
-- `extraArgs`: extra switches for every launch, for example `["--lang=en-US"]`.
+- `allowSync`: `false` (default) adds `--disable-sync`, and on Edge disables
+  `msImplicitSignin`. Without it, Edge signs every fresh profile in to the Windows account
+  and turns sync on, so the agent's profile would receive your passwords and history.
+- `extraArgs`: extra switches for every launch, for example `["--lang=en-US"]`. Your own
+  `--disable-features=...` values are merged with the server's, not replaced.
 - `portRange`: inclusive range of local CDP ports. One port per running environment.
 
 The old top-level `braveExecutable` key was removed. Use `browser.executable`.

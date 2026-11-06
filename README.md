@@ -110,6 +110,7 @@ wrong types stop the server with a clear error. A full example is in
 | --- | --- | --- |
 | `browser.executable` | `"auto"` | Path to the browser binary, or `"auto"` (tries Chromium, Brave, Edge, Chrome) |
 | `browser.headless` | `true` | Default for new environments; agents can override per environment |
+| `browser.allowSync` | `false` | Allow browser sync. Off by default, which also stops Edge from signing new profiles in to your Windows account |
 | `browser.extraArgs` | `[]` | Extra command-line switches for every browser |
 | `browser.portRange` | `9400`–`9499` | Local CDP ports, one per running environment |
 | `profileSource.mode` | `"fresh"` | `fresh`: empty profiles. `clone`: copy your browser profile once into a template. `template`: reuse a prepared template |
@@ -170,6 +171,8 @@ This is a local developer tool. Keep in mind:
   Linux the server creates profile directories with mode `0700`.
 - Agents can add directories to `devExtensionPaths`; those become readable by
   `install_extension` for that environment.
+- Browser sync is disabled unless `browser.allowSync` is `true`. Without this, Edge signs a
+  fresh profile in to the Windows account and syncs passwords and history both ways.
 
 ## Development
 
