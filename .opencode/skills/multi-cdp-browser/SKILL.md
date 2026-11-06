@@ -1,111 +1,115 @@
 ---
-name: Multi-CDP Browser
-description: Control isolated persistent Brave environments through the multi-cdp MCP. Use this skill whenever the user asks to browse or interact with websites, inspect console/network/performance, take screenshots, test browser extensions, reload/enable/disable extensions, manage browser environments, or run concurrent browser work—even when they do not mention multi-cdp. Prefer this workflow over Playwright or standalone Chrome DevTools whenever multi-cdp tools are available.
-compatibility: OpenCode V2 with the multi-cdp MCP server configured
+name: multi-cdp-browser
+description: Control isolated, persistent browser environments through the multi-cdp MCP server. Use this skill whenever the user asks to browse or interact with websites, log in somewhere, inspect console/network/performance, take screenshots, test or reload browser extensions, manage browser environments, or run several browser tasks at once, even when they do not mention multi-cdp. Prefer this workflow over Playwright or a standalone Chrome DevTools server whenever multi-cdp tools are available.
+compatibility: OpenCode 2.2.5 or newer with the multi-cdp MCP server configured
 ---
 
-# Multi-CDP Browser Workflow
+# Multi-CDP browser workflow
 
-Use the `multi-cdp` MCP tools for browser work. The proxy routes ordinary browser calls to
-the environment bound to the invoking OpenCode conversation.
+Every conversation gets its own browser environment: a separate profile, port and set of
+tabs. The first browser call creates it; later calls reuse it. Nothing is shared between
+conversations unless you hand an environment over on purpose.
 
-## Cheat sheet (do not search the catalog for these)
+## Cheat sheet
 
-Call as `tools["multi-cdp"].<name>(args)` inside `execute`.
+Call as `tools["multi-cdp"].<name>(args)` inside `execute`. Do not search the catalog for these.
 
 | Tool | Args |
 | --- | --- |
 | `cdp_environment_create` | `{ name?, headless?, fresh?, devExtensionPaths? }` |
-| `cdp_environment_list` | `{}` (no identity needed; shows owner and `extensionControl`) |
+| `cdp_environment_list` | `{}` (shows state, owner, `extensionControl`) |
 | `cdp_environment_select` | `{ environmentId }` |
 | `cdp_environment_stop` | `{ environmentId? }` |
+| `cdp_environment_release` | `{}` |
 | `cdp_extension_list` | `{}` (check `controllable` before toggling) |
 | `cdp_extension_set_enabled` | `{ extensionId, enabled }` |
 | `cdp_extension_reload` | `{ extensionId }` |
-| `install_extension` | `{ path }` |
 | `list_pages` / `select_page` | `{}` / `{ pageId, bringToFront? }` |
-| `new_page` / `navigate_page` | `{ url }` / `{ pageId, url, timeout? }` |
+| `new_page` / `navigate_page` | `{ url }` / `{ pageId, type: "url", url, timeout? }` |
 | `take_snapshot` / `take_screenshot` | `{ pageId }` |
 | `click` / `hover` | `{ pageId, uid \| selector \| x+y, bringToFront?, dblClick? }` |
-| `fill_form` / `press_key` | `{ pageId, elements }` / `{ pageId, key }` |
+| `fill_form` / `type_text` / `press_key` | `{ pageId, elements }` / `{ pageId, text }` / `{ pageId, key }` |
 | `evaluate_script` | `{ pageId, function, timeout?, bringToFront? }` |
 | `list_console_messages` / `list_network_requests` | `{ pageId }` |
 
-## Identity
+## Before the first browser call
 
-- Calls route by `_meta.sessionID`. OpenCode Code Mode `execute` does not send it yet, so
-  pass `callerId: "<current session ID>"` on **every** call, always the same value.
-- Without `callerId`, `environmentId` alone addresses that environment directly.
-  Creating with `name` and no `callerId` makes later `environmentId` calls consistent.
-- `cdp_environment_stop({ environmentId })` stops any idle environment; deleting one owned
-  by another identity needs `cdp_environment_select` first. Errors name the owner.
+Decide what the task needs, then either let the first call create a default environment
+or call `cdp_environment_create` yourself:
 
-## Background tabs and auto-hiding controls
+| Task | Do this |
+| --- | --- |
+| Reading pages, screenshots, DOM, console, network, performance | Just call `list_pages`; the default headless environment is created for you |
+| Login, CAPTCHA, extension popups, toolbar actions, anything the user must see or do | `cdp_environment_create({ headless: false })` |
+| Work the user will come back to later | Add a stable `name`, for example `{ name: "shop-checkout" }` |
+| A clean browser with no cookies or extensions from the template | Add `fresh: true` |
+| Testing an extension build from this project or worktree | Add `devExtensionPaths: ["<absolute path to the unpacked build>"]` |
 
-- Hidden tabs throttle timers and `requestAnimationFrame`. Pass `bringToFront: true` to
-  `evaluate_script`, `click` or `hover` for timing-sensitive work, keep in-page waits
-  ≤15 s and pass `timeout` (ms) to `evaluate_script` for longer ones.
-- Player controls that hide on mouse-out invalidate snapshot `uid`s. Use
-  `hover({ pageId, selector })` then `click({ pageId, selector })`; the pointer stays where
-  `hover` left it.
-- A navigation timeout usually means the load event was slow; the result includes the
-  page's URL and `readyState`. Pass `timeout: 45000` for streaming sites.
+When the user has to sign in, open a visible environment, navigate to the login page and
+ask them to sign in. The profile keeps that login across stop and resume.
 
-## Choose visibility before the first browser call
+## Working with pages
 
-- For routine navigation, screenshots, DOM, console, network, and performance work, let the
-  first downstream browser call lazily create the default headless environment.
-- For login, extension popups, toolbar actions, visual debugging, or user-assisted work,
-  call `cdp_environment_create` first with `headless: false`.
-- Use a stable `name` when the user will return to the environment later.
-- Pass `fresh: true` only when the task needs a clean browser without template state.
-- Pass `devExtensionPaths` when testing a build from a specific project or worktree.
-
-`install_extension` only reads the OS temp directory, `devExtensionPaths` and the
-configured `backend.filesystemRoots`; prefer `devExtensionPaths` for worktree builds.
-
-## Reuse and isolation
-
-1. Use the currently bound environment unless the user asks for another one.
-2. Check `cdp_environment_list` before creating extra named environments.
-3. Use `cdp_environment_select` only for deliberate reuse or handover.
-4. Never assume two conversations share tabs, cookies, selected pages, or extension state.
-5. When calling page-scoped downstream tools, obtain the current `pageId` from `list_pages`.
+1. Get a `pageId` from `list_pages` (or `new_page`) before page-scoped calls.
+2. Prefer `take_snapshot` and element `uid`s for clicking and filling forms.
+3. Controls that hide on mouse-out (video players, menus) invalidate snapshot `uid`s. Use
+   `hover({ pageId, selector })`, then `click({ pageId, selector })`; the pointer stays
+   where `hover` left it.
+4. Background tabs throttle timers and `requestAnimationFrame`. Pass `bringToFront: true`
+   to `evaluate_script`, `click` or `hover` for anything timing-sensitive.
+5. Keep in-page waits under about 15 s. For longer scripts pass `timeout` (ms, max 170000)
+   to `evaluate_script`.
+6. A navigation timeout usually means the load event was slow, not that the page failed.
+   The result includes the URL and `readyState`; check them before retrying, and pass a
+   larger `timeout` for heavy sites.
 
 ## Extension development
 
-1. Build the extension before asking the browser to reload it.
-2. Use `cdp_extension_list` to resolve IDs and enabled state.
-3. Use `cdp_extension_reload` after changing an existing build.
-4. Use `cdp_extension_set_enabled` for deterministic enable/disable tests.
-5. Use a visible environment for popup, toolbar, permission-dialog, or user-gesture work.
-6. Verify behaviour through observable page effects, console output, or network activity—not
-   merely by checking that the extension is listed.
+1. Build the extension first; the browser loads the unpacked directory, not your sources.
+2. `cdp_extension_list` gives IDs, enabled state and `controllable`.
+3. After rebuilding, call `cdp_extension_reload`.
+4. Use `cdp_extension_set_enabled` for on/off tests. A disabled extension stays disabled
+   across restarts until you enable it again.
+5. `install_extension` only reads the OS temp directory, `devExtensionPaths` and the
+   configured `backend.filesystemRoots`. Prefer `devExtensionPaths` for worktree builds.
+6. Verify behaviour through page effects, console output or network activity, not only by
+   checking that the extension is listed.
+7. If `extensionControl` is `unavailable`, read `extensionControlError`. Google Chrome
+   ignores command-line extensions; extension control needs Chromium, Brave or Edge.
+   Otherwise `cdp_environment_stop` and retry.
 
-Cloned streaming sites sessions do not remain authenticated. For those sites, create or
-select a visible persistent environment and ask the user to sign in once. Stop/resume keeps
-the environment's new login and extension state.
+## Reuse and handover
+
+- Use the environment bound to this conversation unless the user asks for another one.
+- Check `cdp_environment_list` before creating more named environments.
+- `cdp_environment_select({ environmentId })` resumes a stopped environment or takes over
+  an idle one from another conversation. Do this only when the user wants that.
+- Never assume two conversations share tabs, cookies, selected pages or extension state.
+
+## Identity
+
+OpenCode sends the conversation's session ID with every call, including calls from
+`execute`. If a call still fails with "No caller identity", pass
+`callerId: "<current session ID>"` on every call, always the same value, or pass
+`environmentId` to address an environment directly.
 
 ## Lifecycle
 
-- `cdp_environment_stop` closes processes but preserves the profile for later resume.
-- `cdp_environment_release` gives up the conversation binding without stopping the browser.
-- A normal browser call resumes a stopped bound environment automatically.
-- Prefer stop over deletion when the environment may be useful again.
+- `cdp_environment_stop` closes the browser and keeps the profile. The next browser call
+  resumes it.
+- `cdp_environment_release` unbinds this conversation without stopping the browser.
+- Stop environments you no longer need; they hold memory and a port.
 
 ## Destructive operations
 
-Delete profiles only when the user explicitly asks to delete them.
+Delete only when the user explicitly asks.
 
-- `cdp_environment_delete` permanently removes one profile. Use `force: true` only when the
-  user explicitly wants a running environment stopped and deleted.
-- `cdp_environment_delete_all` permanently removes every environment. Call it only after an
-  explicit delete-all request, pass `confirm: "DELETE ALL ENVIRONMENTS"`, and do not infer
-  permission from a general cleanup request.
-- Active tool calls and environments still starting must not be forced.
+- `cdp_environment_delete({ environmentId })` permanently removes one profile. Pass
+  `force: true` only if the user wants a running environment stopped and deleted.
+- `cdp_environment_delete_all` removes every environment. Call it only after an explicit
+  delete-all request, with `confirm: "DELETE ALL ENVIRONMENTS"`.
 
 ## Reporting
 
-State which environment was created, selected, stopped, handed over, or deleted when that
-information matters. Do not expose cookie values, tokens, private page content, raw profile
-files, or internal OpenCode session IDs.
+Say which environment you created, selected, stopped or deleted when it matters. Never
+expose cookie values, tokens, private page content, profile files or session IDs.

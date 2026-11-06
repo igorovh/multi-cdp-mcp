@@ -1,99 +1,92 @@
 # Troubleshooting
 
-## OpenCode does not show the server
+## The server does not start or does not show up
 
-```powershell
+```sh
 opencode mcp list
 ```
 
-Confirm the command's `cwd` points at this repository and that `bun run start` works from
-that directory. OpenCode prefixes/group tools with the normalized server name
-(`multi-cdp`). Restart the OpenCode service after changing MCP configuration when your
-installed CLI provides service management:
+Run the configured command by hand (for example `bunx github:igorovh/multi-cdp-mcp`). Stderr
+shows the reason: an invalid `config.json` names the bad field, and `braveExecutable`
+must be renamed to `browser.executable`. Restart OpenCode after changing MCP configuration.
 
-```powershell
-opencode service restart
-opencode service status
-```
+## "No Chromium-based browser found"
 
-If `opencode service` is unavailable, close and reopen the OpenCode TUI/application. Use
-`opencode mcp list` to verify the reloaded configuration.
-
-## Template copy fails or cloned logins are stale
-
-Close every Brave window and verify no `brave.exe` remains before setting
-`refreshTemplate: true`. Keep it `false` during normal proxy starts.
-
-Website sessions can expire or be revoked server-side. A one-time login inside a persistent
-environment is retained across stop/resume even when the original session did not clone.
+Install Chromium, Brave, Edge or Chrome, or set `browser.executable` to the binary. On
+Linux the browser must be on `PATH`; Snap and Flatpak builds may need the full path of the
+real binary.
 
 ## "No caller identity"
 
-The client sent no `_meta.sessionID` (OpenCode Code Mode `execute` currently does not; see
-[`opencode-upstream.md`](./opencode-upstream.md)). Pass `callerId: "<session ID>"` on every
-call, or `environmentId` to address an environment directly.
+The client sent no session ID in `_meta`. OpenCode 2.2.5+ always sends one. For other
+clients, pass `callerId: "<session ID>"` on every call, or `environmentId` to address an
+environment directly.
 
 ## "Environment ... belongs to caller ..."
 
-The environment was bound under another identity, for example created with `callerId`
-and later stopped without it. The error names the owner. Repeat the call with that
-`callerId`, or pass `environmentId` explicitly to `cdp_environment_stop`. Deletion requires
-a takeover with `cdp_environment_select` first.
+Another identity owns the environment, for example it was created with `callerId` and
+later stopped without it. The error names the owner. Repeat the call with that `callerId`,
+or pass `environmentId` to `cdp_environment_stop`. Deleting requires a takeover with
+`cdp_environment_select` first.
 
-## Extensions disappear after a restart
+## Template copy fails or cloned logins are missing
 
-Keep `extensions.materializeProfileExtensions: true`. See finding 2 in
-[`findings.md`](./findings.md). After the first launch Chromium no longer stores the
-manifest in `Secure Preferences`; the proxy then finds each extension through the `key`
-it wrote into `Default\Extensions\<id>\<version>\manifest.json`. Deleting those
-directories makes recovery impossible.
+Close the source browser completely before the first copy or before setting
+`refreshTemplate: true`. Many sites and Chrome's cookie encryption bind sessions to the
+original profile: sign in once inside the environment; stop and resume keep it.
+
+## Extension control is unavailable
+
+`cdp_environment_list` shows `extensionControl` and `extensionControlError`.
+
+- **Google Chrome**: Chrome 137+ ignores `--load-extension`. Use Chromium, Brave or Edge for
+  extension work.
+- **Other browsers**: the server retries on every extension call and wakes a dormant control
+  worker. If it still fails, check `extensions.controlExtensionPath`, read
+  `<dataRoot>/logs/browser-<port>.log`, then `cdp_environment_stop` and retry. A browser
+  recovered after a server crash keeps the flags it was started with.
+
+## Extensions are disabled after a restart
+
+The server enables developer mode before every launch and re-enables extensions it loaded.
+Extensions you disabled with `cdp_extension_set_enabled` stay disabled; enable them again
+explicitly. Keep `extensions.materializeProfileExtensions: true` for cloned profiles, and
+do not delete `Default/Extensions` inside a profile.
 
 ## "cannot be modified by user"
 
-Chromium locks an extension whose cloned install record it does not trust; this affected
-"Load unpacked" builds inherited from the template. New starts reload those builds through
-`--load-extension`, which makes them controllable. `cdp_extension_list` reports
-`controllable: false` and a `lockedReason` for anything still locked.
-
-## Enable/disable says control is unavailable
-
-The error and `cdp_environment_list` (`extensionControl`, `extensionControlError`) give
-the reason. The proxy retries the attach on every extension call and wakes a dormant
-control worker by opening its page. If it still fails, check that
-`extensions.controlExtensionPath` points to `extensions\control`, inspect
-`brave-<port>.log` under `<dataRoot>\logs`, then `cdp_environment_stop` and retry; a
-browser recovered after a proxy crash keeps the flags it was launched with.
+Chromium locks extensions whose cloned install record it does not trust. Load the
+extension's directory through `devExtensionPaths` in a new environment.
+`cdp_extension_list` marks such extensions `controllable: false` with a `lockedReason`.
 
 ## `install_extension` says "Access denied"
 
-The backend only reads paths under its roots; see "Paths readable by `install_extension`"
-in [`CONFIGURATION.md`](./CONFIGURATION.md). It is deterministic: OS-temp paths work, other
-paths need `backend.filesystemRoots` or the environment's `devExtensionPaths`.
+The backend only reads inside its roots: the OS temp directory, `devExtensionPaths` and
+`backend.filesystemRoots`. See [`CONFIGURATION.md`](./CONFIGURATION.md).
 
 ## Timeouts and background tabs
 
 Hidden tabs throttle timers and `requestAnimationFrame`. Pass `bringToFront: true` to
-`evaluate_script`, `click` or `hover`, and keep in-page waits short. `evaluate_script`
-accepts `timeout` (ms). A navigation timeout returns the page's current URL and
-`readyState`; the page has usually loaded.
+`evaluate_script`, `click` or `hover`, and keep in-page waits short. A navigation timeout
+returns the page's URL and `readyState`; the page has usually loaded.
 
 ## Environment is locked
 
-A live proxy owns that profile. Do not delete the lock or open the same directory manually.
-If a proxy crashed, the next proxy automatically proves the recorded PID is dead and takes
-over the stale lock.
+A running server owns that profile. Do not delete the lock or open the profile directory
+in another browser. After a crash, the next server proves the recorded PID is dead and
+takes over the stale lock.
 
 ## Port is unavailable
 
-Expand `browser.portRange` or stop the process using that port. The proxy never attaches to
-an unknown process merely because it responds on a saved port.
+Widen `browser.portRange` or stop whatever uses the port. The server never attaches to an
+unknown browser just because it answers on a saved port.
 
 ## Collect diagnostics
 
-Set `MULTI_CDP_MCP_VERBOSE=1`, reproduce once, then inspect:
+Set `MULTI_CDP_MCP_VERBOSE=1`, reproduce once, then check:
 
-- `<dataRoot>\logs\brave-<port>.log`
-- `<dataRoot>\logs\backend-<environment>.log`
-- OpenCode: `~/.local/share/opencode/log/opencode.log`
+- `<dataRoot>/logs/browser-<port>.log`
+- `<dataRoot>/logs/backend-<environment>.log`
+- the MCP client's own log (OpenCode: `~/.local/share/opencode/log/`)
 
 Do not share cookies, authorization headers, profile files or private screenshots.

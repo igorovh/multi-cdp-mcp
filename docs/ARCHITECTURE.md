@@ -3,58 +3,64 @@
 ## Request path
 
 ```text
-OpenCode tools/call
-  └─ _meta.sessionID
+MCP tools/call
+  └─ caller identity (_meta session ID, callerId or environmentId)
       └─ EnvironmentManager binding
           ├─ persistent profile + atomic process lock
-          ├─ detached Brave process + dedicated CDP port
+          ├─ detached browser process + dedicated CDP port
           ├─ CDP client + extension-control service worker
           └─ dedicated chrome-devtools-mcp stdio client
 ```
 
-Identity comes from `_meta.sessionID`, then `callerId`, then an explicit `environmentId`;
-see "Caller identity" in [`CONFIGURATION.md`](./CONFIGURATION.md).
-
 `evaluate_script`, `click`, `hover`, `navigate_page` and `new_page` pass through a thin
-proxy layer (`src/server/page-tools.ts`): in-page timeouts, `bringToFront`, selector and
-coordinate input via CDP `Input.dispatchMouseEvent`, and page state after a navigation
+layer (`src/server/page-tools.ts`): in-page timeouts, `bringToFront`, selector and
+coordinate input through CDP `Input.dispatchMouseEvent`, and page state after a navigation
 timeout. Every other tool is forwarded unchanged.
 
-The proxy discovers downstream tool schemas with a throwaway backend connected to an
-unreachable endpoint. `chrome-devtools-mcp` connects to a browser lazily, so discovery
-does not allocate a profile or launch Brave.
+The server discovers downstream tool schemas with a throwaway backend pointed at an
+unreachable endpoint. `chrome-devtools-mcp` connects lazily, so discovery launches no browser.
+
+The browser binary is resolved on the first launch (`src/browser/detect.ts`), so the server
+starts and lists tools even when no browser is installed.
 
 ## Concurrency
 
-- Creation and startup are single-flight per session/environment.
-- Ports are reserved before browser startup, including concurrent starts.
-- Every environment has its own backend connection; there is no global browser lock.
-- `activeCalls` prevents stop or handover while a tool is in flight.
-- Tool cancellation and timeout are passed to the affected downstream call only.
+- Creation and startup are single-flight per conversation and environment.
+- Ports are reserved before the browser starts, including during concurrent starts.
+- Every environment has its own backend; there is no global browser lock.
+- `activeCalls` prevents stop or handover while a tool call is running.
+- Cancellation and timeouts reach only the affected backend call.
 - Mutating calls are never replayed after a backend failure.
 
 ## Persistence and crash recovery
 
 `environments.json` is replaced atomically and stores profile identity, not trusted live
-state. Profile lock files use exclusive creation and include the proxy PID.
+state. Profile lock files use exclusive creation and contain the server's PID.
 
-After a hard proxy crash, Brave survives by design. A new proxy reconnects only after it
-finds a live Windows process whose executable, `--user-data-dir` and
-`--remote-debugging-port` all match the environment record, then verifies the CDP endpoint.
-A saved PID alone is never trusted.
+Browsers are launched detached, so they survive a server crash. A new server reconnects
+only when the browser on the recorded port reports the environment's profile directory on
+`chrome://version`; it reads the browser PID from CDP `SystemInfo.getProcessInfo`. A saved
+PID is never trusted on its own, and a browser whose PID cannot be confirmed is never
+force-killed.
+
+Stopping or deleting an environment whose browser is gone does not launch a new one.
 
 ## Extension control
 
-The CDP `Extensions` domain is unpacked-only and has no enable/disable method. The bundled
-control extension holds `management` permission. The proxy attaches to its MV3 service
-worker and calls `chrome.management` through `Runtime.evaluate(userGesture: true)`.
+The CDP `Extensions` domain handles unpacked extensions only and cannot enable or disable
+them. The bundled control extension holds the `management` permission. The server attaches
+to its MV3 service worker and calls `chrome.management` through
+`Runtime.evaluate(userGesture: true)`. The attachment keeps the worker alive; if the worker
+is dormant, the server opens `chrome-extension://<id>/control.html` once to wake it.
 
-The debugger attachment keeps the service worker alive while the environment runs. If the
-worker is missing, the proxy opens `chrome-extension://<id>/control.html` once to wake it
-(the ID is derived from the unpacked path) and retries on later extension calls.
+Command-line extensions need developer mode, or Chromium disables them on restart. The
+server sets `extensions.ui.developer_mode` in the profile before each launch. When an
+expected extension still comes up disabled (seen on Edge), it enables developer mode
+through `chrome.developerPrivate` on the browser's extensions page and re-enables the
+extensions it loaded, except those the caller disabled on purpose.
 
 ## Deletion safety
 
-Profile deletion is constrained to the configured `envs` root. Running environments are
-rejected unless `force: true`; active calls and startups are never forced. Bulk deletion
-also requires the exact confirmation string `DELETE ALL ENVIRONMENTS`.
+Profile deletion is limited to the `envs` directory under `dataRoot`. Running environments
+are rejected unless `force: true`; active calls and startups are never forced. Bulk
+deletion also requires the exact string `DELETE ALL ENVIRONMENTS`.

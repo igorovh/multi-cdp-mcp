@@ -1,128 +1,193 @@
 # multi-cdp-mcp
 
-Local MCP proxy that gives every OpenCode conversation its own persistent, isolated
-Brave browser environment.
+An MCP server that gives every AI agent conversation its own persistent, isolated
+Chromium browser. Works with Chrome, Edge, Brave and Chromium on Windows, macOS and Linux.
+It wraps the official [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp)
+tools and adds environment management and extension control.
 
 ```text
-OpenCode session A ─┬─ multi-cdp-mcp ─ environment A ─ Brave profile A
-OpenCode session B ─┤                 ─ environment B ─ Brave profile B
-OpenCode session C ─┘                 ─ environment C ─ Brave profile C
+OpenCode conversation A ─┐                 ┌─ environment A ─ browser profile A (port 9400)
+OpenCode conversation B ─┼─ multi-cdp-mcp ─┼─ environment B ─ browser profile B (port 9401)
+OpenCode conversation C ─┘                 └─ environment C ─ browser profile C (port 9402)
 ```
 
-The proxy keeps the official `chrome-devtools-mcp` tools and routes calls using
-`CallToolRequest.params._meta.sessionID`. OpenCode Code Mode `execute` does not send it
-yet, so those calls pass `callerId` (see [`docs/opencode-upstream.md`](./docs/opencode-upstream.md)).
+## Features
 
-## Status
+- **One browser per conversation.** The first browser call creates an environment for
+  that conversation. Tabs, cookies, logins and extensions never leak between conversations.
+- **Persistent profiles.** Stop an environment and resume it later with its logins and
+  extension state intact. Name environments to come back to them.
+- **Any Chromium browser.** Detects Chromium, Brave, Edge or Chrome automatically, or uses
+  the binary you configure.
+- **Extension control.** List, enable, disable and reload any extension. Load unpacked
+  builds per environment (`devExtensionPaths`), handy for testing worktree builds side by side.
+- **Headless or visible.** Headless by default; pass `headless: false` when a human has to
+  log in or watch.
+- **Agent-friendly page tools.** `evaluate_script` gets an in-page `timeout`; `click` and
+  `hover` accept a CSS `selector` or `x`/`y`; `bringToFront` avoids throttled background tabs.
+- **Survives crashes.** Browsers outlive the server. A restarted server reconnects to them
+  after checking each browser's profile path.
+- **Agent skill included.** Teaches the agent when to use visible windows, how to test
+  extensions and how to clean up safely.
 
-Phases 1–4 from [`PLAN.md`](./PLAN.md) are implemented and validated on Windows with:
+## Requirements
 
-- Brave `153.1.95.102` / Chromium `153.0.8010.48`
-- Bun `1.4.0`
-- `chrome-devtools-mcp` `1.9.0`
-- `@modelcontextprotocol/sdk` `1.22.0`
+- [Bun](https://bun.sh) 1.2 or newer.
+- A Chromium-based browser: Chromium, Brave, Microsoft Edge or Google Chrome.
+  Google Chrome 137+ ignores command-line extensions, so extension control and
+  `devExtensionPaths` need Chromium, Brave or Edge. Everything else works in Chrome.
+- For OpenCode: version 2.2.5 or newer. Older versions do not send the conversation ID
+  from Code Mode, so agents must pass `callerId` themselves.
 
-The three-conversation acceptance suite passes, including concurrent lazy startup,
-separate ports/profiles/backends, extension control, screenshot forwarding, handover,
-stop/resume and hard-crash recovery.
+## Install
 
-Cloned streaming sites sessions did not remain authenticated. Sign in once inside each
-persistent environment; subsequent stop/resume keeps that environment's profile.
+Add the server to your OpenCode config (`~/.config/opencode/opencode.jsonc`, or
+`opencode.jsonc` in a project):
 
-## Quick start
-
-```powershell
-bun install
-bun run typecheck
-bun run start
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "multi-cdp": {
+        "type": "local",
+        "command": ["bunx", "github:igorovh/multi-cdp-mcp"],
+        "codemode": true,
+        "timeout": { "startup": 60000, "catalog": 30000, "execution": 600000 }
+      }
+    }
+  }
+}
 ```
 
-This repository already contains [`opencode.jsonc`](./opencode.jsonc), so OpenCode V2
-discovers the server when started in this project. Check it with:
+Restart OpenCode and check that it connects:
 
-```powershell
+```sh
 opencode mcp list
 ```
 
-OpenCode exposes the server under `tools.multi-cdp`. Browser calls lazily create an
-environment for the invoking conversation.
+Then install the agent skill, so agents know how to use the tools well:
 
-## Agent skill
-
-The repository includes `.opencode/skills/multi-cdp-browser/SKILL.md`. It teaches agents
-when to choose headless or visible environments, how to test/reload extensions, and how to
-handle lifecycle and destructive operations safely.
-
-Install it globally by copying the directory to:
-
-```text
-~/.config/opencode/skills/multi-cdp-browser/
+```sh
+bunx github:igorovh/multi-cdp-mcp install-skill
 ```
 
-Project discovery gives the repository copy precedence while working here; the global copy
-applies in every other project.
+It copies [`multi-cdp-browser`](./.opencode/skills/multi-cdp-browser/SKILL.md) to
+`~/.config/opencode/skills/`.
 
-## Profiles
+Other MCP clients work the same way: run `bunx github:igorovh/multi-cdp-mcp` as a stdio server.
 
-The default configuration clones a prepared Brave template under
-`%LOCALAPPDATA%\multi-cdp-mcp\templates\default` and creates persistent profiles under
-`%LOCALAPPDATA%\multi-cdp-mcp\envs\<environment-id>`.
+<details>
+<summary>Install from a local clone instead</summary>
 
-Set `profileSource.mode` in `%LOCALAPPDATA%\multi-cdp-mcp\config.json`:
+```sh
+git clone https://github.com/igorovh/multi-cdp-mcp
+cd multi-cdp-mcp
+bun install
+```
 
-| Mode | Behaviour |
+```jsonc
+"command": ["bun", "run", "/path/to/multi-cdp-mcp/src/index.ts"]
+```
+
+</details>
+
+## Configuration
+
+Everything works without a config file. To change defaults, create `config.json`:
+
+| OS | Default config path |
 | --- | --- |
-| `clone` | Build/reuse a template copied from `sourceUserDataDir`; carries logins and extensions |
-| `fresh` | New environments start from an empty Brave profile |
-| `template` | Require and reuse an already prepared `templates\default` directory |
+| Windows | `%LOCALAPPDATA%\multi-cdp-mcp\config.json` |
+| macOS | `~/Library/Application Support/multi-cdp-mcp/config.json` |
+| Linux | `$XDG_CONFIG_HOME/multi-cdp-mcp/config.json` (`~/.config/...`) |
 
-`cdp_environment_create` also accepts `fresh: true` for a one-off empty profile, and
-`devExtensionPaths` for worktree-specific unpacked builds.
+Set `MULTI_CDP_MCP_CONFIG` to use another file. Partial files are fine; unknown keys and
+wrong types stop the server with a clear error. A full example is in
+[`config.example.json`](./config.example.json).
 
-Copy [`config.example.json`](./config.example.json) to
-`%LOCALAPPDATA%\multi-cdp-mcp\config.json` to override defaults. Set
-`MULTI_CDP_MCP_CONFIG` to use another file.
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `browser.executable` | `"auto"` | Path to the browser binary, or `"auto"` (tries Chromium, Brave, Edge, Chrome) |
+| `browser.headless` | `true` | Default for new environments; agents can override per environment |
+| `browser.extraArgs` | `[]` | Extra command-line switches for every browser |
+| `browser.portRange` | `9400`–`9499` | Local CDP ports, one per running environment |
+| `profileSource.mode` | `"fresh"` | `fresh`: empty profiles. `clone`: copy your browser profile once into a template. `template`: reuse a prepared template |
+| `profileSource.sourceUserDataDir` | `"auto"` | Profile to clone; `"auto"` uses the detected browser's own profile |
+| `extensions.devExtensionPaths` | `[]` | Unpacked extensions loaded into every environment |
+| `backend.filesystemRoots` | `[]` | Extra directories `install_extension` and other path tools may read |
+| `dataRoot` | per-OS data dir | Where profiles, templates and logs live |
+| `limits.maxEnvironments` | `8` | Running environments at once |
 
-> Close the source Brave profile before the first template copy or an explicit refresh.
-> A live Chromium profile is not a consistent snapshot.
+More options and details: [`docs/CONFIGURATION.md`](./docs/CONFIGURATION.md).
 
-## Management tools
+> **`clone` copies your real browser profile**, including cookies and saved sessions,
+> into `dataRoot`. Close the browser before the first copy. Some sites (and Chrome's
+> app-bound cookie encryption on Windows) still require a fresh login; sign in once inside
+> the environment and it stays signed in.
+
+## Tools
+
+All `chrome-devtools-mcp` tools keep their names and results. The server adds:
 
 | Tool | Purpose |
 | --- | --- |
-| `cdp_environment_create` | Create and bind a named, template-based or fresh environment |
-| `cdp_environment_list` | Show persistent environments and lifecycle/ownership state |
-| `cdp_environment_select` | Select/resume an existing environment; explicit handover when idle |
-| `cdp_environment_stop` | Stop processes while retaining the profile |
-| `cdp_environment_release` | Release a binding without stopping the browser |
-| `cdp_environment_delete` | Permanently delete one profile; running ones require `force` |
-| `cdp_environment_delete_all` | Delete all profiles after confirmation; running ones require `force` |
-| `cdp_extension_list` | List every extension with enabled state, source and `controllable` |
-| `cdp_extension_set_enabled` | Enable or disable any extension by ID |
-| `cdp_extension_reload` | Reload any extension by disabling and re-enabling it |
+| `cdp_environment_create` | Create and bind an environment (`name`, `headless`, `fresh`, `devExtensionPaths`) |
+| `cdp_environment_list` | List environments with state, owner and extension-control status |
+| `cdp_environment_select` | Resume an environment, or take over an idle one |
+| `cdp_environment_stop` | Close the browser, keep the profile |
+| `cdp_environment_release` | Unbind without stopping |
+| `cdp_environment_delete` | Delete one environment and its profile |
+| `cdp_environment_delete_all` | Delete everything (requires an exact confirmation string) |
+| `cdp_extension_list` | Extensions with enabled state, source and `controllable` |
+| `cdp_extension_set_enabled` | Enable or disable an extension |
+| `cdp_extension_reload` | Reload an extension |
 
-All 34 downstream DevTools tools retain their original names and result structures. The
-proxy adds `timeout` and `bringToFront` to `evaluate_script`, and `selector`, `x`/`y` and
-`bringToFront` to `click` and `hover`.
+## How it works
 
-Brave runs headless by default. An agent can pass `headless: false` to
-`cdp_environment_create` when a visible window is needed for login or extension UI work.
+For each environment the server launches the browser itself, with its own
+`--user-data-dir`, a free CDP port and the bundled control extension, then starts a
+dedicated `chrome-devtools-mcp` process connected to that port. Calls are routed by the
+conversation ID that OpenCode sends in `_meta["ai.opencode/sessionID"]`; clients that send
+none can pass `callerId` or `environmentId`.
+
+The CDP `Extensions` domain cannot enable or disable extensions, so a tiny bundled extension
+with the `management` permission does it; the server drives it over CDP. Cloned Web Store
+extensions are re-declared as unpacked with their original keys, so their IDs and storage
+survive restarts.
+
+Details: [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) and [`docs/RESEARCH.md`](./docs/RESEARCH.md).
+
+## Security model
+
+This is a local developer tool. Keep in mind:
+
+- Any local process can connect to an environment's CDP port on `127.0.0.1` and control
+  that browser, including its logged-in sessions.
+- Any MCP caller can pass any `callerId` or `environmentId`; the server separates
+  conversations, it does not authenticate them.
+- In `clone` mode, `dataRoot` holds copies of your cookies and sessions. On macOS and
+  Linux the server creates profile directories with mode `0700`.
+- Agents can add directories to `devExtensionPaths`; those become readable by
+  `install_extension` for that environment.
 
 ## Development
 
-```powershell
+```sh
+bun install
 bun run test          # unit tests
 bun run typecheck     # strict TypeScript
-bun run build         # bundle for the Bun runtime
-bun run smoke         # two-session end-to-end test
-bun run smoke:crash   # hard-crash/reconnection test
+bun run smoke         # two conversations end to end (launches real browsers)
+bun run smoke:crash   # kill the server, reconnect to the surviving browser
 bun run acceptance    # three concurrent conversations
-bun run feasibility --close
 ```
 
-See:
+The end-to-end scripts use `"auto"` browser detection and fresh profiles. Set
+`MULTI_CDP_BROWSER=<path>` to pick a browser, or `MULTI_CDP_CLONE_FROM=<user data dir>` to
+test cloning. `MULTI_CDP_MCP_VERBOSE=1` enables debug logs on stderr.
 
-- [`docs/CONFIGURATION.md`](./docs/CONFIGURATION.md)
-- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)
-- [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md)
-- [`docs/findings.md`](./docs/findings.md) for the profile/extension research
+Troubleshooting: [`docs/TROUBLESHOOTING.md`](./docs/TROUBLESHOOTING.md).
+
+## License
+
+[MIT](./LICENSE)

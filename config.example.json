@@ -1,30 +1,24 @@
 {
-  "braveExecutable": "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
-  "dataRoot": "C:\\Users\\YOUR_NAME\\AppData\\Local\\multi-cdp-mcp",
+  "browser": {
+    "executable": "auto",
+    "headless": true,
+    "extraArgs": [],
+    "portRange": { "start": 9400, "end": 9499 }
+  },
   "profileSource": {
-    "mode": "clone",
-    "sourceUserDataDir": "C:\\Users\\YOUR_NAME\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data",
+    "mode": "fresh",
+    "sourceUserDataDir": "auto",
     "refreshTemplate": false,
     "maxTemplateSizeGb": 5
   },
   "extensions": {
-    "controlExtensionPath": "E:\\path\\to\\multi-cdp-mcp\\extensions\\control",
     "devExtensionPaths": [],
     "materializeProfileExtensions": true
   },
   "backend": {
-    "runtime": "bun",
     "enableExtensionTools": true,
     "filesystemRoots": [],
     "compactToolSchemas": true
-  },
-  "browser": {
-    "headless": true,
-    "extraArgs": [],
-    "portRange": {
-      "start": 9400,
-      "end": 9499
-    }
   },
   "limits": {
     "maxEnvironments": 8,
