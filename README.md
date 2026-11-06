@@ -59,7 +59,7 @@ Add the server to your OpenCode config (`~/.config/opencode/opencode.jsonc`, or
     "servers": {
       "multi-cdp": {
         "type": "local",
-        "command": ["bunx", "github:igorovh/multi-cdp-mcp"],
+        "command": ["bunx", "github:igorovh/multi-cdp-mcp#v0.2.0"],
         "codemode": true,
         "timeout": { "startup": 60000, "catalog": 30000, "execution": 600000 }
       }
@@ -67,6 +67,9 @@ Add the server to your OpenCode config (`~/.config/opencode/opencode.jsonc`, or
   }
 }
 ```
+
+`#v0.2.0` pins a release. Change it to a newer tag to upgrade; without a tag, `bunx` may keep
+using whatever version it cached first.
 
 Restart OpenCode and check that it connects:
 
@@ -77,13 +80,13 @@ opencode mcp list
 Then install the agent skill, so agents know how to use the tools well:
 
 ```sh
-bunx github:igorovh/multi-cdp-mcp install-skill
+bunx github:igorovh/multi-cdp-mcp#v0.2.0 install-skill
 ```
 
 It copies [`multi-cdp-browser`](./.opencode/skills/multi-cdp-browser/SKILL.md) to
 `~/.config/opencode/skills/`.
 
-Other MCP clients work the same way: run `bunx github:igorovh/multi-cdp-mcp` as a stdio server.
+Other MCP clients work the same way: run `bunx github:igorovh/multi-cdp-mcp#v0.2.0` as a stdio server.
 
 <details>
 <summary>Install from a local clone instead</summary>
