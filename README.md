@@ -5,6 +5,14 @@ Chromium browser. Works with Chrome, Edge, Brave and Chromium on Windows, macOS 
 It wraps the official [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/chrome-devtools-mcp)
 tools and adds environment management and extension control.
 
+<p align="center">
+  <img src="docs/demo.gif" alt="Three agent conversations get three isolated browsers; a cookie set in one is invisible to the others and survives stop and resume" width="1000">
+</p>
+
+The demo shows three agent conversations opening pages in parallel, each in its own browser:
+a cookie set in one is invisible to the others, and it survives stopping and resuming the
+environment.
+
 ```text
 OpenCode conversation A ─┐                 ┌─ environment A ─ browser profile A (port 9400)
 OpenCode conversation B ─┼─ multi-cdp-mcp ─┼─ environment B ─ browser profile B (port 9401)
