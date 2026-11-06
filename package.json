@@ -1,14 +1,48 @@
 {
   "name": "multi-cdp-mcp",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.2.0",
+  "description": "MCP server that gives every AI agent session its own persistent, isolated Chromium browser (Chrome, Edge, Brave, Chromium) with extension control. Built on chrome-devtools-mcp.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "mcp-server",
+    "chrome-devtools-protocol",
+    "cdp",
+    "chromium",
+    "browser-automation",
+    "chrome-devtools-mcp",
+    "opencode",
+    "ai-agents",
+    "browser-extensions"
+  ],
+  "homepage": "https://github.com/igorovh/multi-cdp-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/igorovh/multi-cdp-mcp/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/igorovh/multi-cdp-mcp.git"
+  },
+  "license": "MIT",
+  "author": "igorovh (https://github.com/igorovh)",
   "type": "module",
-  "description": "MCP proxy that gives each agent conversation its own isolated Brave browser environment.",
+  "bin": {
+    "multi-cdp-mcp": "src/index.ts"
+  },
+  "files": [
+    "src",
+    "!src/**/*.test.ts",
+    "extensions/control",
+    ".opencode/skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "bun": ">=1.2.0"
+  },
   "scripts": {
     "start": "bun run src/index.ts",
     "build": "bun build src/index.ts --target=bun --outfile=dist/index.js",
-    "feasibility": "bun run scripts/feasibility/run.ts",
-    "probe:sites": "bun run scripts/site-state-probe.ts",
     "smoke": "bun run scripts/smoke.ts",
     "smoke:crash": "bun run scripts/crash-recovery-smoke.ts",
     "acceptance": "bun run scripts/acceptance.ts",
@@ -16,11 +50,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.22.0",
-    "chrome-devtools-mcp": "1.9.0"
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "chrome-devtools-mcp": "1.12.0"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/bun": "1.4.4",
     "typescript": "5.9.3"
   }
 }
