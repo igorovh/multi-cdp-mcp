@@ -6,12 +6,12 @@ It wraps the official [`chrome-devtools-mcp`](https://github.com/ChromeDevTools/
 tools and adds environment management and extension control.
 
 <p align="center">
-  <img src="docs/demo.gif" alt="Three agent conversations get three isolated browsers; a cookie set in one is invisible to the others and survives stop and resume" width="1000">
+  <img src="docs/demo.gif" alt="Three OpenCode sessions drive three isolated browsers at once: one signs in to a CRM, another is still signed out, a third fills a shopping cart" width="1000">
 </p>
 
-The demo shows three agent conversations opening pages in parallel, each in its own browser:
-a cookie set in one is invisible to the others, and it survives stopping and resuming the
-environment.
+The demo shows three OpenCode sessions working in parallel, each in its own browser: one signs
+in to a test CRM, the second checks the same CRM at the same time and is still signed out, and
+the third fills a shopping cart.
 
 ```text
 OpenCode conversation A ─┐                 ┌─ environment A ─ browser profile A (port 9400)
