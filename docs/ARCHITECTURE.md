@@ -34,8 +34,10 @@ starts and lists tools even when no browser is installed.
 
 ## Persistence and crash recovery
 
-`environments.json` is replaced atomically and stores profile identity, not trusted live
-state. Profile lock files use exclusive creation and contain the server's PID.
+`environments.json` stores profile identity, not trusted live state. MCP clients often run
+one server process per project, all sharing `dataRoot`, so each write takes a lock file
+(`environments.json.lock`, with dead-owner detection), re-reads the file, applies only its
+own change and replaces the file atomically. Profile lock files use exclusive creation and contain the server's PID.
 
 Browsers are launched detached, so they survive a server crash. A new server reconnects
 only when the browser on the recorded port reports the environment's profile directory on
